@@ -1,0 +1,132 @@
+#!/bin/sh
+# nrsync — rsync wrapper with device alias resolution
+#
+# Usage:  nrsync <src> <dst>
+#
+# Either src or dst may use "alias:/path" notation, resolved via devices.db.
+# If no user is saved for the alias, prompts and persists it.
+#
+# rsync options:
+#   -a               archive mode (preserve perms, times, symlinks, etc.)
+#   --partial        keep partial transfers for resume
+#   --delay-updates  atomic rename of files at end of transfer
+#   --safe-links     skip symlinks pointing outside destination tree
+#   --checksum       compare by checksum rather than mtime+size
+#   --mkpath         create destination dir if missing (rsync >= 3.2.3)
+#   --timeout        inactivity timeout in seconds
+#   --info=progress2 single-line progress
+#
+# Note: --append-verify is omitted intentionally. --checksum without it
+# is safer for general use (always verifies the final result correctly).
+#
+# NOEMAP_SSH_ROLE=transfer disables ControlMaster in ssh_config so that
+# non-interactive rsync sessions never hang on a missing master socket.
+#
+# Exit codes match rsync's exit codes.
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CFG="$BASE/config/ssh_config"
+
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: nrsync <src> <dst>\n'
+        printf '  rsync between local and a devices.db alias over SSH.\n'
+        printf '  Use alias:/path for the remote side.\n'
+        exit 0
+        ;;
+esac
+
+# Collect optional --exclude=PATTERN flags before the two positional args.
+_excludes=""
+while [ $# -gt 2 ] || { [ $# -gt 0 ] && case "$1" in --exclude=*) true;; *) false;; esac; }; do
+    case "$1" in
+        --exclude=*) _excludes="$_excludes --exclude=${1#--exclude=}"; shift ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 2 ] || {
+    printf 'usage: nrsync [--exclude=PATTERN ...] <src> <dst>\n' >&2
+    exit 1
+}
+# Always omit VCS metadata and noemap runtime from transfers.
+_default_excludes="--exclude=.git --exclude=logs --exclude=tmp --exclude=state/cache.env --exclude=state/hosts.db --exclude=state/known_hosts --exclude=state/devices.db"
+
+_src="$(resolve_scp_target "$1" "$DB")"
+_dst="$(resolve_scp_target "$2" "$DB")"
+
+export NOEMAP_SSH_ROLE=transfer
+
+if [ -f "$CFG" ]; then
+    _ssh_cmd="ssh -F ${CFG} -o ControlMaster=no"
+else
+    log WARN "ssh_config not found at $CFG -- rsync will use default ssh settings"
+    _ssh_cmd="ssh -o ControlMaster=no"
+fi
+
+# Detect REMOTE rsync flavour to pick a compatible option set.
+# macOS ships openrsync (protocol 29) which lacks GNU-only flags like
+# --mkpath/--info=progress2/--checksum/--safe-links. Probe the remote side.
+_remote_alias=""
+case "$2" in *:*) _remote_alias="${2%%:*}" ;; esac
+_remote_is_openrsync=0
+_remote_path=""
+if [ -n "$_remote_alias" ]; then
+    _rinfo="$(nssh "$_remote_alias" 'rsync --version 2>&1 | head -1' 2>/dev/null || true)"
+    case "$_rinfo" in *openrsync*) _remote_is_openrsync=1 ;; esac
+    # destination path after the colon (for pre-mkdir, replaces --mkpath)
+    _remote_path="${2#*:}"
+fi
+
+# Portable base options shared by GNU rsync and openrsync.
+set -- -a --partial --delay-updates --timeout=10 --progress
+
+if [ "$_remote_is_openrsync" -eq 1 ]; then
+    # openrsync: no --mkpath -> create destination dir first via nssh.
+    case "$_remote_path" in
+        */) nssh "$_remote_alias" "mkdir -p '"'"'$_remote_path'"'"'" >/dev/null 2>&1 || true ;;
+        *)  _rdir="$(dirname "$_remote_path")"; nssh "$_remote_alias" "mkdir -p '"'"'$_rdir'"'"'" >/dev/null 2>&1 || true ;;
+    esac
+else
+    # GNU rsync: richer, safer set.
+    set -- "$@" --safe-links --checksum --info=progress2
+    _rsync_ver="$(rsync --version 2>/dev/null | awk 'NR==1{print $3}')"
+    _rmaj="$(printf '%s' "$_rsync_ver" | cut -d. -f1)"
+    _rmin="$(printf '%s' "$_rsync_ver" | cut -d. -f2)"
+    _rpat="$(printf '%s' "$_rsync_ver" | cut -d. -f3)"
+    if [ "${_rmaj:-0}" -gt 3 ] || { [ "${_rmaj:-0}" -eq 3 ] && [ "${_rmin:-0}" -gt 2 ]; } ||        { [ "${_rmaj:-0}" -eq 3 ] && [ "${_rmin:-0}" -eq 2 ] && [ "${_rpat:-0}" -ge 3 ]; }; then
+        set -- "$@" --mkpath
+    fi
+fi
+
+# shellcheck disable=SC2086
+exec rsync \
+    "$@" \
+    ${_default_excludes} \
+    ${_excludes} \
+    -e "$_ssh_cmd" \
+    "$_src" "$_dst"

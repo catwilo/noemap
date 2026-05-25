@@ -1,0 +1,88 @@
+#!/bin/sh
+# nssh — SSH to a device registered in devices.db
+#
+# Usage:  nssh <alias> [remote-command...]
+#
+# The alias is resolved against BASE/state/devices.db.
+# All remaining arguments are forwarded as the remote command.
+# If no user is saved for the alias, prompts interactively and persists it.
+#
+# NOEMAP_SSH_ROLE is exported so ssh_config Match blocks can distinguish
+# interactive sessions (ControlMaster auto) from transfer sessions (no).
+#
+# Exit codes:
+#   0   — SSH session ended normally
+#   1   — alias not found, db missing, or arg error
+#   N   — exit code forwarded from the ssh process
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CFG="$BASE/config/ssh_config"
+
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: nssh <alias> [command...]\n'
+        printf '  SSH to a device registered in devices.db; forwards any command.\n'
+        exit 0
+        ;;
+esac
+
+[ $# -ge 1 ] || {
+    printf 'usage: nssh <alias> [command...]\n' >&2
+    exit 1
+}
+
+_name="$1"
+shift
+
+_row="$(resolve_device "$_name" "$DB")"
+_ip="$(printf '%s\n'   "$_row" | cut -d'|' -f1)"
+_user="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+_port="$(printf '%s\n' "$_row" | cut -d'|' -f3)"
+
+# Prompt for user if missing or placeholder; persists to devices.db
+_user="$(_ensure_user "$_name" "$DB" "$_user")"
+
+[ -n "$_user" ] || {
+    printf '[ERROR] no user configured for "%s"\n' "$_name" >&2
+    exit 1
+}
+
+# Start clipboard forward listener if running interactively (Termux client)
+if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
+    nclip-listen start >/dev/null 2>&1 || true
+fi
+
+# Signal to ssh_config which Match block to activate
+export NOEMAP_SSH_ROLE=interactive
+
+if [ -f "$CFG" ]; then
+    exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
+else
+    log WARN "ssh_config not found at $CFG — connecting without it"
+    exec ssh -p "$_port" "${_user}@${_ip}" "$@"
+fi

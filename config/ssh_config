@@ -1,0 +1,32 @@
+# noemap ssh_config
+#
+# Security note: StrictHostKeyChecking is set to accept-new, which silently
+# accepts new host keys on first connection. This is suitable for trusted
+# home/lab networks. On untrusted networks, change to "yes" and pre-populate
+# UserKnownHostsFile with known host fingerprints.
+#
+# ControlMaster notes:
+#   - nssh uses ControlMaster auto for connection multiplexing convenience.
+#   - nscp and nrsync explicitly disable it (ControlMaster=no via Match) to
+#     prevent hangs in non-interactive contexts if the master socket is slow.
+
+# Defaults for all hosts
+Host *
+    ServerAliveInterval 30
+    ConnectTimeout 5
+    StrictHostKeyChecking accept-new
+    # WARNING: accept-new silently trusts new host keys.
+    # Change to "yes" on untrusted networks (requires manual known_hosts setup).
+    UserKnownHostsFile ~/.local/share/noemap/known_hosts
+    ControlPath ~/.ssh/noemap-%r@%h:%p
+    ControlPersist 10m
+
+# nssh — interactive sessions benefit from multiplexing
+# (nssh sets NOEMAP_SSH_ROLE=interactive before exec'ing ssh)
+Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'interactive' ]"
+    ControlMaster auto
+
+# nscp / nrsync — non-interactive; never be a master, never wait for one
+# (these tools set NOEMAP_SSH_ROLE=transfer before exec'ing ssh/rsync)
+Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'transfer' ]"
+    ControlMaster no

@@ -1,0 +1,115 @@
+#!/bin/sh
+# nclip-listen — manage the noemap clipboard forward listener
+#
+# Listens on a local Unix socket and pipes received data into the
+# local clipboard (termux-clipboard-set / pbcopy / wl-copy).
+# The socket is exposed to SSH servers via RemoteForward so that
+# clipso on the server can mirror to this client's clipboard.
+#
+# Usage:
+#   nclip-listen start    start listener in background (no-op if running)
+#   nclip-listen stop     stop listener
+#   nclip-listen restart  stop + start
+#   nclip-listen status   show running state and socket path
+#
+# Environment:
+#   NOEMAP_BASE            override project root
+#   CLIP_FORWARD_SOCK      override socket path (default: ~/.noemap-clip.sock)
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+
+SOCK="${CLIP_FORWARD_SOCK:-$HOME/.noemap-clip.sock}"
+PID_FILE="${BASE}/state/nclip-listen.pid"
+
+# ── detect local clipboard ────────────────────────────────────────────────────
+_clip_cmd=""
+if command -v termux-clipboard-set >/dev/null 2>&1; then
+    _clip_cmd="termux-clipboard-set"
+elif command -v pbcopy >/dev/null 2>&1; then
+    _clip_cmd="pbcopy"
+elif command -v wl-copy >/dev/null 2>&1; then
+    _clip_cmd="wl-copy"
+else
+    printf '[ERROR] no clipboard tool found (termux-clipboard-set / pbcopy / wl-copy)\n' >&2
+    exit 1
+fi
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+_is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    _pid="$(cat "$PID_FILE")"
+    [ -n "$_pid" ] || return 1
+    kill -0 "$_pid" 2>/dev/null
+}
+
+_do_start() {
+    if _is_running; then
+        printf '[INFO]  nclip-listen already running (pid %s)\n' "$(cat "$PID_FILE")" >&2
+        return 0
+    fi
+    rm -f "$SOCK"
+    # loop: accept one connection → pipe to clipboard → repeat
+    # nc -lU accepts one connection per invocation; the loop restarts it
+    (
+        while true; do
+            nc -lU "$SOCK" 2>/dev/null | "$_clip_cmd" || true
+        done
+    ) &
+    _pid=$!
+    mkdir -p "$(dirname "$PID_FILE")"
+    printf '%s\n' "$_pid" > "$PID_FILE"
+    printf '[OK]    nclip-listen started (pid %s, sock %s)\n' "$_pid" "$SOCK" >&2
+}
+
+_do_stop() {
+    if ! _is_running; then
+        printf '[INFO]  nclip-listen not running\n' >&2
+        rm -f "$SOCK" "$PID_FILE"
+        return 0
+    fi
+    _pid="$(cat "$PID_FILE")"
+    kill "$_pid" 2>/dev/null || true
+    # kill child nc processes that may outlive the loop
+    kill -- "-$_pid" 2>/dev/null || true
+    rm -f "$SOCK" "$PID_FILE"
+    printf '[OK]    nclip-listen stopped (pid %s)\n' "$_pid" >&2
+}
+
+_do_status() {
+    if _is_running; then
+        printf '[OK]    running  pid=%-6s  sock=%s\n' "$(cat "$PID_FILE")" "$SOCK" >&2
+        [ -S "$SOCK" ] && printf '[OK]    socket exists\n' >&2 \
+                       || printf '[WARN]  socket missing — RemoteForward not active?\n' >&2
+    else
+        printf '[INFO]  not running\n' >&2
+    fi
+}
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+case "${1:-}" in
+    start)   _do_start  ;;
+    stop)    _do_stop   ;;
+    restart) _do_stop; _do_start ;;
+    status)  _do_status ;;
+    -h|--help)
+        printf 'usage: nclip-listen <start|stop|restart|status>\n'
+        exit 0
+        ;;
+    *)
+        printf 'usage: nclip-listen <start|stop|restart|status>\n' >&2
+        exit 1
+        ;;
+esac

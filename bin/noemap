@@ -1,0 +1,323 @@
+#!/bin/sh
+# noemap — network discovery and SSH device mapper
+#
+# Usage:
+#   noemap              fast scan: find SSH-reachable hosts, show results,
+#                       then prompt to register any new ones
+#   noemap --deep       same scan + OS detection via SSH banner (slower)
+#   noemap --ports      show all open ports per host
+#   noemap -h|--help    full usage for all tools in this suite
+#
+# Environment:
+#   NOEMAP_BASE    installation root (default: ~/dev/noemap)
+#
+# Exit codes:
+#   0  completed successfully
+#   1  error (missing dep, lock conflict, no interface)
+
+set -eu
+
+# Derive BASE from this script's own location so install/runtime never
+# depend on a hardcoded path. Honors NOEMAP_BASE override if set.
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+# Resolve symlink chain so invocation via ~/.local/bin/noemap finds the
+# real bin dir (readlink -f is GNU/Termux; fall back to a manual walk).
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+
+# ---------------------------------------------------------------------------
+# Help — covers every tool in the suite
+# ---------------------------------------------------------------------------
+_print_help() {
+cat << 'HELP'
+
+  noemap — network discovery and SSH device mapper
+  ─────────────────────────────────────────────────────────────────────
+
+  DISCOVERY
+
+    noemap                 Fast scan: find SSH hosts on ports 22/8022/2222.
+                           Validates registered hosts first via ping.
+                           Displays results, then prompts to register new hosts.
+
+    noemap --deep          Same scan + SSH banner grab (nmap -sV) to distinguish
+                           Termux/Android from Debian/Ubuntu on port 22.
+                           Slower but more accurate OS type detection.
+
+    noemap --ports         Show all probed ports per host in the results table.
+
+    noemap --deep --ports  Combine both flags.
+
+  ─────────────────────────────────────────────────────────────────────
+
+  CONNECT
+
+    nssh <alias>                    Open interactive SSH session.
+    nssh <alias> <cmd> [args...]    Run command remotely, print output.
+
+      nssh deb                      # interactive shell
+      nssh deb uname -a             # single command -> stdout
+      nssh deb 'df -h | head -5'   # piped command (quote it)
+
+  ─────────────────────────────────────────────────────────────────────
+
+  TRANSFER
+
+    nscp <alias>:/remote/path ./local/    Copy from remote to local.
+    nscp ./local/file <alias>:/remote/    Copy from local to remote.
+
+    nrsync ./local/dir/ <alias>:/remote/  Sync local -> remote (archive mode,
+    nrsync <alias>:/remote/ ./local/      resume, checksum verify).
+
+    nclip <alias>:/remote/path            Copy remote file content to clipboard
+                                          (requires clipso / xclip / pbcopy).
+
+  ─────────────────────────────────────────────────────────────────────
+
+  DEVICE MANAGEMENT  (ndevs)
+
+    ndevs                              List all registered devices.
+    ndevs --edit <alias>               Edit alias / IP / user / port.
+    ndevs --rename <old> <new>         Rename alias.
+    ndevs --remove <alias> [alias...]  Remove one or more devices.
+    ndevs --update-ip <alias> <ip>     Update IP, auto-clean known_hosts.
+    ndevs --resetall                   Wipe devices.db + known_hosts + hosts.db + cache.
+
+  ─────────────────────────────────────────────────────────────────────
+
+  NOTES
+
+    • Aliases are short names you assign during registration (deb, cel, pi ...).
+    • All tools resolve aliases from  $NOEMAP_BASE/state/devices.db
+    • SSH config lives at            $NOEMAP_BASE/config/ssh_config
+    • known_hosts lives at           ~/.local/share/noemap/known_hosts
+    • Logs at                        $NOEMAP_BASE/logs/noemap.log
+
+    • On each run: registered hosts are pinged first. Non-responding hosts
+      are removed automatically. Responding hosts skip the full scan.
+
+    • Fast mode:  type detection = port only (8022->android, 22/2222->linux).
+                  No nmap -sV, no banner grab. Safe and quick on Termux.
+    • Deep mode:  adds banner grab on port 22 to tell Termux apart from
+                  a real Debian/Ubuntu sshd. Use when type matters.
+
+HELP
+}
+
+# ---------------------------------------------------------------------------
+# install — idempotent: symlink bin/ into PATH, wire ~/.zshrc capture loader
+# ---------------------------------------------------------------------------
+_do_install() {
+    _bindir=""
+    if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ]; then
+        _bindir="${PREFIX}/bin"
+    elif [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+        _bindir="$HOME/.local/bin"
+    else
+        printf '[ERROR] no writable bin dir found\n' >&2; exit 1
+    fi
+
+    for _f in "$BASE"/bin/*; do
+        [ -f "$_f" ] || continue
+        _n="$(basename "$_f")"
+        ln -sf "$_f" "$_bindir/$_n"
+        printf '  linked %s -> %s\n' "$_n" "$_bindir/$_n"
+    done
+
+    # idempotent ~/.zshrc block between markers (overwrites prior install)
+    _rc="$HOME/.zshrc"
+    _beg='# >>> noemap >>>'
+    _end='# <<< noemap <<<'
+    [ -f "$_rc" ] || : > "$_rc"
+    _tmp="$(mktemp "${TMPDIR:-/tmp}/noemap-rc.XXXXXX")"
+    awk -v b="$_beg" -v e="$_end" '
+        $0==b {skip=1} skip && $0==e {skip=0; next} !skip {print}
+    ' "$_rc" > "$_tmp"
+    {
+        cat "$_tmp"
+        printf '%s\n' "$_beg"
+        printf 'case ":$PATH:" in *":%s:"*) ;; *) export PATH="%s:$PATH";; esac\n' "$_bindir" "$_bindir"
+        printf '[ -n "$LC_NCSSH" ] && source "%s/lib/capture.zsh"\n' "$BASE"
+        printf 'clipc() { if [ "${1:-}" = -- ]; then shift; printf %%s "$*" | clipso; else clipso; fi; }\n'
+        printf 'compctl -c clipc 2>/dev/null || true\n' 
+        printf '%s\n' "$_end"
+    } > "$_rc"
+    rm -f "$_tmp"
+    printf '  wired %s (idempotent block)\n' "$_rc"
+    printf '[OK] noemap installed (bindir: %s)\n' "$_bindir"
+}
+
+if [ "${1:-}" = install ]; then _do_install; exit 0; fi
+# ---------------------------------------------------------------------------
+# client-setup — emit a script to configure the SSH CLIENT (Mac/Termux) so the
+# server's clipso can mirror to the client clipboard via a forwarded socket.
+# Robust where OSC52 fails (macOS Terminal.app). Run on this server; pipe the
+# output into a shell ON THE CLIENT, or copy-paste it there.
+# ---------------------------------------------------------------------------
+_do_client_setup() {
+    _srv_sock="$HOME/.local/share/noemap/clip.sock"
+    cat <<'CLIENTEOF'
+#!/usr/bin/env bash
+# noemap client clipboard setup — run ON YOUR Mac or Termux.
+# Auto-detects OS: macOS -> LaunchAgent (pbsync); else -> background listener.
+# Adds a RemoteForward so the server socket pipes into your local clipboard.
+set -eu
+SERVER_HOST="${1:-}"
+[ -n "$SERVER_HOST" ] || { echo "usage: bash this.sh <ssh-host-or-alias>"; exit 1; }
+SSH_CONF="$HOME/.ssh/config"
+mkdir -p "$HOME/.local/bin"
+
+if [ "$(uname)" = "Darwin" ]; then
+  LOCAL_SOCK="$HOME/.clipd.sock"
+  cat > "$HOME/.local/bin/pbsync" <<'PBS'
+#!/bin/bash
+SOCK="$HOME/.clipd.sock"
+rm -f "$SOCK"
+exec nc -lU "$SOCK" | pbcopy
+PBS
+  chmod +x "$HOME/.local/bin/pbsync"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$HOME/Library/LaunchAgents/io.clipd.agent.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.clipd.agent</string>
+  <key>ProgramArguments</key>
+  <array><string>$HOME/.local/bin/pbsync</string></array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+PLIST
+  launchctl unload "$HOME/Library/LaunchAgents/io.clipd.agent.plist" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/io.clipd.agent.plist"
+  echo "macOS: LaunchAgent io.clipd.agent cargado"
+else
+  LOCAL_SOCK="$HOME/.noemap-clip.sock"
+  if command -v termux-clipboard-set >/dev/null 2>&1; then CLIP_CMD=termux-clipboard-set
+  elif command -v wl-copy >/dev/null 2>&1; then CLIP_CMD=wl-copy
+  elif command -v xclip >/dev/null 2>&1; then CLIP_CMD="xclip -selection clipboard"
+  else echo "no clipboard tool found"; exit 1; fi
+  cat > "$HOME/.local/bin/noemap-clip-listener" <<LISTENER
+#!/usr/bin/env bash
+SOCK="$LOCAL_SOCK"
+rm -f "\$SOCK"
+while true; do nc -lU "\$SOCK" 2>/dev/null | $CLIP_CMD || true; done
+LISTENER
+  chmod +x "$HOME/.local/bin/noemap-clip-listener"
+  echo "Linux/Termux: inicia el listener: ~/.local/bin/noemap-clip-listener &"
+fi
+
+touch "$SSH_CONF"; chmod 600 "$SSH_CONF"
+BEG="# >>> noemap-clip $SERVER_HOST >>>"
+END="# <<< noemap-clip $SERVER_HOST <<<"
+TMP="$(mktemp)"
+awk -v b="$BEG" -v e="$END" '$0==b{s=1} s&&$0==e{s=0;next} !s{print}' "$SSH_CONF" > "$TMP"
+{
+  cat "$TMP"
+  echo "$BEG"
+  echo "Host $SERVER_HOST"
+  echo "    RemoteForward /home/u/.local/share/noemap/clip.sock $LOCAL_SOCK"
+  echo "$END"
+} > "$SSH_CONF"
+rm -f "$TMP"
+echo "Listo. Reconecta SSH para crear el socket en el servidor."
+CLIENTEOF
+}
+if [ "${1:-}" = client-setup ]; then _do_client_setup; exit 0; fi
+
+# ---------------------------------------------------------------------------
+# Parse flags
+# ---------------------------------------------------------------------------
+NOEMAP_FULL_PORTS=0
+NOEMAP_DEEP=0
+NOEMAP_IFACE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ports)    NOEMAP_FULL_PORTS=1 ;;
+        --deep)     NOEMAP_DEEP=1 ;;
+        -i)         shift; [ -n "${1:-}" ] || { printf '[ERROR] -i requires an interface name\n' >&2; exit 1; }; NOEMAP_IFACE="$1" ;;
+        -i*)        NOEMAP_IFACE="${1#-i}" ;;
+        -h|--help)  _print_help; exit 0 ;;
+        *)
+            printf '[ERROR] unknown option: %s\n' "$1" >&2
+            printf 'usage: noemap [--deep] [--ports] [-i <iface>] [-h]\n' >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+export NOEMAP_FULL_PORTS
+export NOEMAP_DEEP
+export NOEMAP_IFACE
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+for _mod in util.sh lock.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+init_session
+
+trap 'release_lock; cleanup_session' EXIT
+trap 'release_lock; cleanup_session; trap - INT;  kill -INT  "$$"' INT
+trap 'release_lock; cleanup_session; trap - TERM; kill -TERM "$$"' TERM
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
+ensure_dirs
+acquire_lock
+
+log INFO "noemap starting (base=$BASE)"
+
+# Deep mode needs root for nmap -O. Prompt for sudo once, up front, so the
+# scan never stalls mid-way waiting for a password. Termux/no-sudo skip.
+if [ "$NOEMAP_DEEP" = "1" ] && [ -z "${PREFIX:-}" ] && [ "$(id -u)" != "0" ] && has_cmd sudo; then
+    log INFO "deep mode: requesting sudo for OS fingerprint"
+    sudo -v || log WARN "sudo unavailable — OS detection will fall back to passive"
+fi
+
+validate_env
+load_cache
+
+detect_iface
+detect_network
+
+discover_hosts        # Phase 0: validate registered + Phase 1/2: find new
+
+[ -n "${HOST_LIST:-}" ] || {
+    log WARN "no hosts found -- nothing to fingerprint"
+    render_output
+    render_registered_devices
+    exit 0
+}
+
+fingerprint_hosts
+
+save_cache
+render_output
+prompt_new_hosts
+render_connect
+render_active_hosts
+render_registered_devices
+
+log OK "noemap completed"

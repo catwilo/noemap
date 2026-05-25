@@ -1,0 +1,148 @@
+#!/bin/sh
+# nclip — copy a remote file to clipboard via SSH cat + clipso
+#
+# Usage:  nclip <alias:/remote/path>
+#
+# Resolves the alias from devices.db, streams the remote file over SSH,
+# and pipes it to clipso (~/scripts/clipso.sh by default).
+#
+# clipso is a soft dependency: if it is missing the file content is printed
+# to stdout instead so the caller can redirect as needed.
+#
+# Environment:
+#   NOEMAP_BASE   — override project root     (default: ~/dev/noemap)
+#   CLIPSO_BIN    — override clipso location  (default: ~/scripts/clipso.sh)
+#
+# Exit codes:
+#   0  — file copied to clipboard (or printed to stdout as fallback)
+#   1  — argument error, alias not found, or SSH failure
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CFG="$BASE/config/ssh_config"
+CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/scripts/clipso.sh")}"
+
+# -----------------------------------------------------------------------
+# Load shared helpers (log, has_cmd, resolve_device, _ensure_user)
+# -----------------------------------------------------------------------
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+# -----------------------------------------------------------------------
+# Argument validation
+# -----------------------------------------------------------------------
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: nclip <alias:/remote/path>\n'
+        printf '  Copy a remote file to the clipboard via SSH cat + clipso.\n'
+        printf '  Alias resolved from devices.db. Falls back to stdout if\n'
+        printf '  clipso is missing.\n'
+        exit 0
+        ;;
+esac
+
+[ $# -eq 1 ] || {
+    printf 'usage: nclip <alias:/remote/path>\n' >&2
+    exit 1
+}
+
+_target="$1"
+
+case "$_target" in
+    *:*) ;;
+    *)
+        log ERROR "nclip requires alias:/path notation (got: $_target)"
+        exit 1
+        ;;
+esac
+
+_alias="${_target%%:*}"
+_remote_path="${_target#*:}"
+
+# -----------------------------------------------------------------------
+# Resolve alias → IP / user / port
+# -----------------------------------------------------------------------
+_row="$(resolve_device "$_alias" "$DB")"
+_ip="$(printf '%s\n'   "$_row" | cut -d'|' -f1)"
+_user="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+_port="$(printf '%s\n' "$_row" | cut -d'|' -f3)"
+
+_user="$(_ensure_user "$_alias" "$DB" "$_user")"
+
+[ -n "$_user" ] || {
+    log ERROR "no user configured for \"$_alias\""
+    exit 1
+}
+
+# Single-quote-escape the remote path to prevent remote shell injection
+# on paths containing spaces, $vars, or backticks.
+# Matches the same escaping used by clipso for remote targets.
+_safe_path="$(printf '%s' "$_remote_path" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")"
+
+# -----------------------------------------------------------------------
+# _ssh_cat — stream remote file to stdout; exit non-zero on SSH failure.
+# Two branches keep -F "$CFG" properly quoted (no word-split risk).
+# Consistent with nssh / nscp patterns in this suite.
+# -----------------------------------------------------------------------
+_ssh_cat() {
+    if [ -f "$CFG" ]; then
+        ssh -F "$CFG" \
+            -p "$_port" \
+            -o ConnectTimeout=5 \
+            \
+            "${_user}@${_ip}" \
+            "cat ${_safe_path}"
+    else
+        ssh \
+            -p "$_port" \
+            -o ConnectTimeout=5 \
+            \
+            "${_user}@${_ip}" \
+            "cat ${_safe_path}"
+    fi
+}
+
+# -----------------------------------------------------------------------
+# clipso: soft dependency — degrade to stdout if missing.
+# _ssh_cat is called as left side of pipe; its exit code is captured
+# explicitly because /bin/sh does not support pipefail portably.
+# -----------------------------------------------------------------------
+if [ -x "$CLIPSO" ]; then
+    # Temp file buffers the remote content so we can check ssh's exit
+    # code before handing data to clipso — avoids feeding empty input
+    # to clipso (which would trigger its "empty input" error).
+    _tmp="$(mktemp "${TMPDIR:-/tmp}/nclip.XXXXXX")"
+    trap 'rm -f "$_tmp"' EXIT INT TERM
+
+    if ! _ssh_cat > "$_tmp"; then
+        log ERROR "SSH transfer failed — check host, port, key auth, and path"
+        exit 1
+    fi
+
+    "$CLIPSO" < "$_tmp"
+else
+    log WARN "clipso not found at $CLIPSO — printing file to stdout instead"
+    log WARN "set CLIPSO_BIN or install clipso at ~/scripts/clipso.sh to enable clipboard"
+    _ssh_cat
+fi

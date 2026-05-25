@@ -1,0 +1,258 @@
+#!/bin/sh
+# ndevs — list and edit devices registered in devices.db
+#
+# Usage:
+#   ndevs                        list all devices
+#   ndevs --edit <alias>         interactively edit alias/ip/user/port
+#   ndevs --rename <old> <new>   rename alias (cleans known_hosts if IP matches)
+#   ndevs --remove <alias>       remove device entry + prune known_hosts
+#   ndevs --update-ip <alias> <newip>  update IP, auto-clean known_hosts
+#
+# Exit codes:
+#   0 — always for list (empty db is not an error)
+#   1 — argument error or alias not found for edit/remove operations
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+
+# Load util helpers (log, has_cmd, atomic_write, known_hosts_*)
+_util="$LIB/util.sh"
+if [ ! -f "$_util" ]; then
+    printf '[ERROR] missing module: util.sh\n' >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$_util"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_require_db() {
+    if [ ! -f "$DB" ]; then
+        printf '[INFO] no devices registered\n' >&2
+        exit 0
+    fi
+}
+
+_has_data() {
+    awk -F'|' '
+        /^[[:space:]]*$/ { next }
+        /^#/             { next }
+        NF >= 2          { found=1; exit }
+        END              { exit !found }
+    ' "$DB" 2>/dev/null && echo yes || echo no
+}
+
+_print_table() {
+    printf '%-12s %-16s %-12s %s\n' ALIAS IP USER PORT
+    printf '%-12s %-16s %-12s %s\n' ------------ ---------------- ------------ ----
+    awk -F'|' '
+        /^[[:space:]]*$/ { next }
+        /^#/             { next }
+        NF >= 2 {
+            port = ($4 == "" ? "22" : $4)
+            printf "%-12s %-16s %-12s %s\n", $1, $2, $3, port
+        }
+    ' "$DB"
+}
+
+# _find_alias alias — prints the raw db line for the alias, or empty string.
+_find_alias() {
+    _a="$1"
+    awk -F'|' -v a="$_a" '
+        /^[[:space:]]*$/ { next }
+        /^#/             { next }
+        $1 == a          { print; exit }
+    ' "$DB" 2>/dev/null
+}
+
+_alias_exists() {
+    _row="$(_find_alias "$1")"
+    [ -n "$_row" ]
+}
+
+# _prompt_field label current — prompts user; returns new value or current if empty.
+_prompt_field() {
+    _label="$1"
+    _current="$2"
+    printf '  %s [%s]: ' "$_label" "$_current" >&2
+    read -r _val </dev/tty || _val=""
+    _val="$(printf '%s' "$_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ -z "$_val" ] && printf '%s\n' "$_current" || printf '%s\n' "$_val"
+}
+
+# _rewrite_db awk_program — runs awk on DB preserving comment/blank lines,
+# writes result to a temp file, then replaces DB atomically.
+# The awk program receives data lines only; comment/blank lines are passed through.
+_rewrite_db() {
+    _prog="$1"
+    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+    awk -F'|' -v prog=1 "
+        /^[[:space:]]*\$/ { print; next }
+        /^#/              { print; next }
+        ${_prog}
+    " "$DB" > "$_tmp_db"
+    mv -f "$_tmp_db" "$DB"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+_cmd_list() {
+    _require_db
+    if [ "$(_has_data)" = "no" ]; then
+        printf '[INFO] no devices registered\n' >&2
+        exit 0
+    fi
+    _print_table
+}
+
+_cmd_edit() {
+    [ $# -ge 1 ] || { printf 'usage: ndevs --edit <alias>\n' >&2; exit 1; }
+    _alias="$1"
+    _require_db
+
+    _row="$(_find_alias "$_alias")"
+    [ -n "$_row" ] || { log ERROR "unknown alias: '$_alias'"; exit 1; }
+
+    _cur_alias="$(printf '%s\n' "$_row" | cut -d'|' -f1)"
+    _cur_ip="$(printf '%s\n'    "$_row" | cut -d'|' -f2)"
+    _cur_user="$(printf '%s\n'  "$_row" | cut -d'|' -f3)"
+    _cur_port="$(printf '%s\n'  "$_row" | cut -d'|' -f4)"
+    [ -n "$_cur_port" ] || _cur_port=22
+
+    printf '\nEditing device: %s\n' "$_alias" >&2
+    _new_alias="$(_prompt_field "alias"  "$_cur_alias")"
+    _new_ip="$(_prompt_field    "ip"     "$_cur_ip")"
+    _new_user="$(_prompt_field  "user"   "$_cur_user")"
+    _new_port="$(_prompt_field  "port"   "$_cur_port")"
+
+    # If IP changed, clean known_hosts of old IP before reconnecting
+    known_hosts_sync_device "$_cur_alias" "$_cur_ip" "$_new_ip"
+
+    # Rewrite db: replace only the matching data line; preserve comments/blanks
+    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+    awk -F'|' \
+        -v old="$_cur_alias" \
+        -v na="$_new_alias" -v ni="$_new_ip" \
+        -v nu="$_new_user"  -v np="$_new_port" '
+        /^[[:space:]]*$/ { print; next }
+        /^#/             { print; next }
+        $1 == old        { printf "%s|%s|%s|%s\n", na, ni, nu, np; next }
+        { print }
+    ' "$DB" > "$_tmp_db"
+    mv -f "$_tmp_db" "$DB"
+    log OK "updated '$_alias' → alias=$_new_alias ip=$_new_ip user=$_new_user port=$_new_port"
+}
+
+_cmd_rename() {
+    [ $# -ge 2 ] || { printf 'usage: ndevs --rename <old> <new>\n' >&2; exit 1; }
+    _old="$1"; _new="$2"
+    _require_db
+    _alias_exists "$_old" || { log ERROR "unknown alias: '$_old'"; exit 1; }
+
+    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+    awk -F'|' -v old="$_old" -v new="$_new" '
+        /^[[:space:]]*$/ { print; next }
+        /^#/             { print; next }
+        $1 == old        { printf "%s|%s|%s|%s\n", new, $2, $3, $4; next }
+        { print }
+    ' "$DB" > "$_tmp_db"
+    mv -f "$_tmp_db" "$DB"
+    log OK "renamed '$_old' → '$_new'"
+}
+
+_cmd_remove() {
+    [ $# -ge 1 ] || { printf 'usage: ndevs --remove <alias> [alias...]\n' >&2; exit 1; }
+    _require_db
+
+    for _alias in "$@"; do
+        _row="$(_find_alias "$_alias")"
+        if [ -z "$_row" ]; then
+            log WARN "unknown alias: '$_alias' — skipping"
+            continue
+        fi
+        _ip="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+
+        _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+        awk -F'|' -v a="$_alias" '
+            /^[[:space:]]*$/ { print; next }
+            /^#/             { print; next }
+            $1 == a          { next }
+            { print }
+        ' "$DB" > "$_tmp_db"
+        mv -f "$_tmp_db" "$DB"
+
+        known_hosts_remove_ip "$_ip"
+        log OK "removed '$_alias' ($_ip) and cleaned known_hosts"
+    done
+}
+
+_cmd_resetall() {
+    rm -f "$DB" "$BASE/state/hosts.db" "$BASE/state/cache.env" "$KNOWN_HOSTS"
+    : > "$DB"
+    log OK "reset complete: devices.db + known_hosts + hosts.db + cache cleared"
+}
+
+_cmd_update_ip() {
+    [ $# -ge 2 ] || { printf 'usage: ndevs --update-ip <alias> <newip>\n' >&2; exit 1; }
+    _alias="$1"; _new_ip="$2"
+    _require_db
+
+    _row="$(_find_alias "$_alias")"
+    [ -n "$_row" ] || { log ERROR "unknown alias: '$_alias'"; exit 1; }
+    _old_ip="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+
+    known_hosts_sync_device "$_alias" "$_old_ip" "$_new_ip"
+
+    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+    awk -F'|' -v a="$_alias" -v ni="$_new_ip" '
+        /^[[:space:]]*$/ { print; next }
+        /^#/             { print; next }
+        $1 == a          { printf "%s|%s|%s|%s\n", $1, ni, $3, $4; next }
+        { print }
+    ' "$DB" > "$_tmp_db"
+    mv -f "$_tmp_db" "$DB"
+    log OK "updated '$_alias': ip $_old_ip → $_new_ip"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+case "${1:-}" in
+    "")                   _cmd_list ;;
+    --edit)               shift; _cmd_edit "$@" ;;
+    --rename)             shift; _cmd_rename "$@" ;;
+    --remove)             shift; _cmd_remove "$@" ;;
+    --update-ip)          shift; _cmd_update_ip "$@" ;;
+    --resetall)           _cmd_resetall ;;
+    -h|--help)
+        printf 'usage: ndevs\n'
+        printf '       ndevs --edit <alias>\n'
+        printf '       ndevs --rename <old> <new>\n'
+        printf '       ndevs --remove <alias> [alias...]\n'
+        printf '       ndevs --update-ip <alias> <newip>\n'
+        printf '       ndevs --resetall\n'
+        ;;
+    *)
+        printf '[ERROR] unknown option: %s\n' "$1" >&2
+        exit 1
+        ;;
+esac

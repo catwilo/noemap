@@ -1,0 +1,166 @@
+#!/bin/sh
+# nscp — scp wrapper with device alias resolution and directory support
+#
+# Usage:
+#   nscp [-r] <src> <dst>
+#
+# Either src or dst may use "alias:/path" notation.  The alias is resolved
+# against devices.db and expanded to "user@ip:/path".  Unknown aliases are
+# passed through unchanged so plain scp syntax still works.
+#
+# Directory transfers:
+#   -r is added automatically when the local source is a directory.
+#   For remote sources (alias:/path) or when the intent is ambiguous,
+#   pass -r explicitly — nscp cannot stat a remote path without an extra
+#   round-trip, so it trusts the caller in that case.
+#   The destination must be a directory (local or remote) when -r is used;
+#   nscp validates local destinations and warns for remote ones.
+#
+# If no user is saved for the alias, prompts interactively and persists it.
+#
+# NOEMAP_SSH_ROLE=transfer disables ControlMaster in ssh_config so that
+# non-interactive sessions never hang waiting for a master socket.
+#
+# Exit codes match scp's exit codes.
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CFG="$BASE/config/ssh_config"
+
+# -----------------------------------------------------------------------
+# Load shared helpers
+# -----------------------------------------------------------------------
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+# -----------------------------------------------------------------------
+# Argument parsing
+# -----------------------------------------------------------------------
+_recursive=false
+
+while getopts ":rh" _opt; do
+    case "$_opt" in
+        r) _recursive=true ;;
+        h)
+            printf 'usage: nscp [-r] <src> <dst>\n'
+            printf '  Copy files between local and a devices.db alias over SSH.\n'
+            printf '  Use alias:/path for remote side. -r for recursive.\n'
+            exit 0
+            ;;
+        *) log ERROR "unknown option: -$OPTARG"; exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+[ $# -eq 2 ] || {
+    printf 'usage: nscp [-r] <src> <dst>\n' >&2
+    exit 1
+}
+
+_src_raw="$1"
+_dst_raw="$2"
+
+# -----------------------------------------------------------------------
+# Classify src and dst as local or remote
+# -----------------------------------------------------------------------
+_is_remote() {
+    # Returns true if the argument uses alias:/path or user@host:/path notation
+    case "$1" in
+        *:*) return 0 ;;
+        *)   return 1 ;;
+    esac
+}
+
+_src_is_remote=false
+_dst_is_remote=false
+_is_remote "$_src_raw" && _src_is_remote=true
+_is_remote "$_dst_raw" && _dst_is_remote=true
+
+# -----------------------------------------------------------------------
+# Local source validations (must exist and be readable before we connect)
+# -----------------------------------------------------------------------
+if [ "$_src_is_remote" = false ]; then
+    [ -e "$_src_raw" ] || {
+        log ERROR "source not found: $_src_raw"
+        exit 1
+    }
+    [ -r "$_src_raw" ] || {
+        log ERROR "source not readable: $_src_raw"
+        exit 1
+    }
+    # Auto-enable -r for local directories
+    if [ -d "$_src_raw" ]; then
+        _recursive=true
+    fi
+fi
+
+# -----------------------------------------------------------------------
+# Local destination validations (when dst is local and -r is active)
+# -----------------------------------------------------------------------
+if [ "$_dst_is_remote" = false ] && [ "$_recursive" = true ]; then
+    if [ -e "$_dst_raw" ] && [ ! -d "$_dst_raw" ]; then
+        log ERROR "destination exists and is not a directory: $_dst_raw"
+        exit 1
+    fi
+fi
+
+# -----------------------------------------------------------------------
+# Resolve aliases → user@ip:/path
+# -----------------------------------------------------------------------
+_src="$(resolve_scp_target "$_src_raw" "$DB")"
+_dst="$(resolve_scp_target "$_dst_raw" "$DB")"
+
+# -----------------------------------------------------------------------
+# Build scp flags
+# -----------------------------------------------------------------------
+_r_flag=""
+if [ "$_recursive" = true ]; then
+    _r_flag="-r"
+fi
+
+# Disable ControlMaster for non-interactive transfers
+export NOEMAP_SSH_ROLE=transfer
+
+# -----------------------------------------------------------------------
+# Transfer
+# -----------------------------------------------------------------------
+if [ -f "$CFG" ]; then
+    # shellcheck disable=SC2086
+    exec scp \
+        -T \
+        -F "$CFG" \
+        -o Compression=yes \
+        -o ControlMaster=no \
+        $_r_flag \
+        "$_src" "$_dst"
+else
+    log WARN "ssh_config not found at $CFG — connecting without it"
+    # shellcheck disable=SC2086
+    exec scp \
+        -T \
+        -o Compression=yes \
+        -o ControlMaster=no \
+        $_r_flag \
+        "$_src" "$_dst"
+fi

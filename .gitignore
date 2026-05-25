@@ -1,0 +1,9 @@
+# runtime — regenerated each run, never commit
+logs/
+tmp/
+state/cache.env
+state/hosts.db
+state/known_hosts
+state/devices.db
+# keep the template
+!state/devices.db.example
