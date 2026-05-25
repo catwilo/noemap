@@ -120,7 +120,7 @@ RC_BLOCK
 fi
 
 # ---------------------------------------------------------------------------
-# clipso — install by default from ~/scripts/clipso/clipso.sh
+# clipso — install by default from ~/unix-toolkit/clipso/clipso.sh
 # ---------------------------------------------------------------------------
 CLIPSO_SCRIPT="${HOME}/scripts/clipso/clipso.sh"
 CLIPSO_INSTALL="${HOME}/scripts/clipso/install.sh"
