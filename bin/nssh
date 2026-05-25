@@ -80,6 +80,20 @@ fi
 # Signal to ssh_config which Match block to activate
 export NOEMAP_SSH_ROLE=interactive
 
+# command mode — auto-copy output to clipboard via clipso
+if [ $# -gt 0 ] && command -v clipso >/dev/null 2>&1; then
+    _nssh_tmp="$(mktemp)"
+    _nssh_rc=0
+    if [ -f "$CFG" ]; then
+        ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
+    else
+        ssh -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
+    fi
+    CLIPSO_NO_SPINNER=1 clipso < "$_nssh_tmp"
+    rm -f "$_nssh_tmp"
+    exit "$_nssh_rc"
+fi
+
 if [ -f "$CFG" ]; then
     exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
 else
