@@ -84,9 +84,9 @@ if [ $# -gt 0 ] && [ -n "$_clipso_bin" ]; then
     _nssh_tmp="$(mktemp)"
     _nssh_rc=0
     if [ -f "$CFG" ]; then
-        ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
+        ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>/dev/tty || _nssh_rc=$?
     else
-        ssh -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
+        ssh -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>/dev/tty || _nssh_rc=$?
     fi
     CLIPSO_NO_SPINNER=1 "$_clipso_bin" < "$_nssh_tmp"
     rm -f "$_nssh_tmp"
