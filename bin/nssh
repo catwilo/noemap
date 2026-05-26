@@ -72,11 +72,6 @@ _user="$(_ensure_user "$_name" "$DB" "$_user")"
     exit 1
 }
 
-# Start clipboard forward listener if running interactively (Termux client)
-if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
-    nclip-listen start >/dev/null 2>&1 || true
-fi
-
 # Signal to ssh_config which Match block to activate
 export NOEMAP_SSH_ROLE=interactive
 
@@ -96,6 +91,11 @@ if [ $# -gt 0 ] && [ -n "$_clipso_bin" ]; then
     CLIPSO_NO_SPINNER=1 "$_clipso_bin" < "$_nssh_tmp"
     rm -f "$_nssh_tmp"
     exit "$_nssh_rc"
+fi
+
+# Start clipboard forward listener only for interactive sessions (Termux client)
+if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
+    nclip-listen start >/dev/null 2>&1 || true
 fi
 
 if [ -f "$CFG" ]; then
