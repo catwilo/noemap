@@ -19,7 +19,7 @@ fail() { log ERROR "$1"; exit 1; }
 has()  { command -v "$1" >/dev/null 2>&1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE="${NOEMAP_BASE:-$HOME/dev/noemap}"
+BASE="${NOEMAP_BASE:-$HOME/unix-toolkit-tools/noemap}"
 log INFO "installing to: $BASE"
 
 # ---------------------------------------------------------------------------
