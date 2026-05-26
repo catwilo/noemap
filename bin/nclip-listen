@@ -33,6 +33,7 @@ BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
 
 SOCK="${CLIP_FORWARD_SOCK:-$HOME/.noemap-clip.sock}"
 PID_FILE="${BASE}/state/nclip-listen.pid"
+CLIP_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last"
 
 # ── detect local clipboard ────────────────────────────────────────────────────
 _clip_cmd=""
@@ -61,11 +62,12 @@ _do_start() {
         return 0
     fi
     rm -f "$SOCK"
-    # loop: accept one connection → pipe to clipboard → repeat
+    mkdir -p "$(dirname "$CLIP_CACHE")"
+    # loop: accept one connection → tee to cache → pipe to clipboard → repeat
     # nc -lU accepts one connection per invocation; the loop restarts it
     (
         while true; do
-            nc -lU "$SOCK" 2>/dev/null | "$_clip_cmd" || true
+            nc -lU "$SOCK" 2>/dev/null | tee "$CLIP_CACHE" | "$_clip_cmd" || true
         done
     ) &
     _pid=$!
@@ -77,8 +79,9 @@ _do_start() {
 _do_foreground() {
     # Run the accept-loop in the foreground; for launchd/systemd KeepAlive.
     rm -f "$SOCK"
+    mkdir -p "$(dirname "$CLIP_CACHE")"
     while true; do
-        nc -lU "$SOCK" 2>/dev/null | "$_clip_cmd" || true
+        nc -lU "$SOCK" 2>/dev/null | tee "$CLIP_CACHE" | "$_clip_cmd" || true
     done
 }
 
