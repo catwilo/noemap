@@ -9,7 +9,7 @@
 #   noemap -h|--help    full usage for all tools in this suite
 #
 # Environment:
-#   NOEMAP_BASE    installation root (default: ~/dev/noemap)
+#   NOEMAP_BASE    installation root (default: ~/unix-toolkit-tools/noemap)
 #
 # Exit codes:
 #   0  completed successfully

@@ -4,14 +4,14 @@
 # Usage:  nclip <alias:/remote/path>
 #
 # Resolves the alias from devices.db, streams the remote file over SSH,
-# and pipes it to clipso (~/scripts/clipso.sh by default).
+# and pipes it to clipso (~/unix-toolkit-tools/clipso/clipso.sh by default).
 #
 # clipso is a soft dependency: if it is missing the file content is printed
 # to stdout instead so the caller can redirect as needed.
 #
 # Environment:
-#   NOEMAP_BASE   — override project root     (default: ~/dev/noemap)
-#   CLIPSO_BIN    — override clipso location  (default: ~/scripts/clipso.sh)
+#   NOEMAP_BASE   — override project root     (default: ~/unix-toolkit-tools/noemap)
+#   CLIPSO_BIN    — override clipso location  (default: ~/unix-toolkit-tools/clipso/clipso.sh)
 #
 # Exit codes:
 #   0  — file copied to clipboard (or printed to stdout as fallback)
@@ -34,7 +34,7 @@ BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
 LIB="$BASE/lib"
 DB="$BASE/state/devices.db"
 CFG="$BASE/config/ssh_config"
-CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/scripts/clipso.sh")}"
+CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/unix-toolkit-tools/clipso/clipso.sh")}"
 
 # -----------------------------------------------------------------------
 # Load shared helpers (log, has_cmd, resolve_device, _ensure_user)
@@ -143,6 +143,6 @@ if [ -x "$CLIPSO" ]; then
     "$CLIPSO" < "$_tmp"
 else
     log WARN "clipso not found at $CLIPSO — printing file to stdout instead"
-    log WARN "set CLIPSO_BIN or install clipso at ~/scripts/clipso.sh to enable clipboard"
+    log WARN "set CLIPSO_BIN or install clipso at ~/unix-toolkit-tools/clipso/clipso.sh to enable clipboard"
     _ssh_cat
 fi

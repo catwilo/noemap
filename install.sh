@@ -122,8 +122,8 @@ fi
 # ---------------------------------------------------------------------------
 # clipso — install by default from ~/unix-toolkit/clipso/clipso.sh
 # ---------------------------------------------------------------------------
-CLIPSO_SCRIPT="${HOME}/scripts/clipso/clipso.sh"
-CLIPSO_INSTALL="${HOME}/scripts/clipso/install.sh"
+CLIPSO_SCRIPT="${HOME}/unix-toolkit-tools/clipso/clipso.sh"
+CLIPSO_INSTALL="${HOME}/unix-toolkit-tools/clipso/install.sh"
 if [ -f "$CLIPSO_INSTALL" ]; then
     log INFO "installing clipso..."
     bash "$CLIPSO_INSTALL"

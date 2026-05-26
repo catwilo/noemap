@@ -8,7 +8,7 @@
 # Output is printed to stdout AND copied to clipboard via clipso.
 #
 # Environment:
-#   NOEMAP_BASE   — override project root    (default: ~/dev/noemap)
+#   NOEMAP_BASE   — override project root    (default: ~/unix-toolkit-tools/noemap)
 #   CLIPSO_BIN    — override clipso location (default: auto-detected)
 
 set -eu
@@ -28,7 +28,7 @@ BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
 LIB="$BASE/lib"
 DB="$BASE/state/devices.db"
 CFG="$BASE/config/ssh_config"
-CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/scripts/clipso/clipso.sh")}"
+CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/unix-toolkit-tools/clipso/clipso.sh")}"
 
 for _mod in util.sh devices.sh; do
     _path="$LIB/$_mod"
