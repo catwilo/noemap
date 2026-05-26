@@ -166,6 +166,59 @@ if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ]; then
             log INFO "RemoteForward wired for alias: ${_alias}"
         done < "$BASE/state/devices.db"
     fi
+
+# ---------------------------------------------------------------------------
+# macOS client — clipboard listener (nclip-listen) via LaunchAgent +
+# RemoteForward wiring so Termux clipso mirrors into pbcopy.
+# ---------------------------------------------------------------------------
+if [ "$(uname)" = "Darwin" ]; then
+    _plist="$HOME/Library/LaunchAgents/io.clipd.agent.plist"
+    _listener="$BASE/bin/nclip-listen"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.clipd.agent</string>
+  <key>ProgramArguments</key>
+  <array><string>$_listener</string><string>foreground</string></array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$(id -u)/io.clipd.agent" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$_plist" 2>/dev/null \
+        && log OK "io.clipd.agent loaded (nclip-listen)" \
+        || log WARN "could not load io.clipd.agent"
+
+    if [ -f "$BASE/state/devices.db" ]; then
+        while IFS="|" read -r _alias _ip _user _port || [ -n "$_alias" ]; do
+            case "$_alias" in "#"*|"") continue ;; esac
+            [ -n "$_user" ] && [ -n "$_ip" ] || continue
+            _port="${_port:-22}"
+            _srv_sock="/data/data/com.termux/files/home/.local/share/noemap/clip.sock"
+            _loc_sock="${HOME}/.noemap-clip.sock"
+            _beg="# >>> noemap-clip ${_alias} >>>"
+            _end="# <<< noemap-clip ${_alias} <<<"
+            _rc="${HOME}/.ssh/config"
+            touch "$_rc"; chmod 600 "$_rc"
+            _tmp="$(mktemp "${TMPDIR:-/tmp}/noemap-ssh.XXXXXX")"
+            awk -v b="$_beg" -v e="$_end" '$0==b{s=1} s&&$0==e{s=0;next} !s{print}' "$_rc" > "$_tmp"
+            {
+                cat "$_tmp"
+                printf '%s\n' "$_beg"
+                printf 'Host %s\n' "$_alias"
+                printf '    RemoteForward %s %s\n' "$_srv_sock" "$_loc_sock"
+                printf '%s\n' "$_end"
+            } > "$_rc"
+            rm -f "$_tmp"
+            log INFO "RemoteForward wired for alias: ${_alias}"
+        done < "$BASE/state/devices.db"
+    fi
+fi
+
 fi
 
 # ---------------------------------------------------------------------------

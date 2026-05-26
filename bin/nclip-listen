@@ -74,6 +74,14 @@ _do_start() {
     printf '[OK]    nclip-listen started (pid %s, sock %s)\n' "$_pid" "$SOCK" >&2
 }
 
+_do_foreground() {
+    # Run the accept-loop in the foreground; for launchd/systemd KeepAlive.
+    rm -f "$SOCK"
+    while true; do
+        nc -lU "$SOCK" 2>/dev/null | "$_clip_cmd" || true
+    done
+}
+
 _do_stop() {
     if ! _is_running; then
         printf '[INFO]  nclip-listen not running\n' >&2
@@ -101,15 +109,16 @@ _do_status() {
 # ── dispatch ──────────────────────────────────────────────────────────────────
 case "${1:-}" in
     start)   _do_start  ;;
+    foreground) _do_foreground ;;
     stop)    _do_stop   ;;
     restart) _do_stop; _do_start ;;
     status)  _do_status ;;
     -h|--help)
-        printf 'usage: nclip-listen <start|stop|restart|status>\n'
+        printf 'usage: nclip-listen <start|stop|restart|status|foreground>\n'
         exit 0
         ;;
     *)
-        printf 'usage: nclip-listen <start|stop|restart|status>\n' >&2
+        printf 'usage: nclip-listen <start|stop|restart|status|foreground>\n' >&2
         exit 1
         ;;
 esac
