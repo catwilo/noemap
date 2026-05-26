@@ -232,12 +232,24 @@ _cmd_update_ip() {
     log OK "updated '$_alias': ip $_old_ip → $_new_ip"
 }
 
+
+_cmd_add() {
+    [ $# -ge 3 ] || { printf 'usage: ndevs --add <alias> <ip> <user> [port]\n' >&2; exit 1; }
+    _alias="$1"; _ip="$2"; _user="$3"; _port="${4:-22}"
+    if [ -f "$DB" ] && grep -q "^${_alias}|" "$DB" 2>/dev/null; then
+        log ERROR "alias '$_alias' already exists — use --edit or --rename"; exit 1
+    fi
+    printf '%s|%s|%s|%s\n' "$_alias" "$_ip" "$_user" "$_port" >> "$DB"
+    log OK "registered '$_alias' ip=$_ip user=$_user port=$_port"
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
 case "${1:-}" in
     "")                   _cmd_list ;;
+    --add)                shift; _cmd_add "$@" ;;
     --edit)               shift; _cmd_edit "$@" ;;
     --rename)             shift; _cmd_rename "$@" ;;
     --remove)             shift; _cmd_remove "$@" ;;
@@ -249,6 +261,7 @@ case "${1:-}" in
         printf '       ndevs --rename <old> <new>\n'
         printf '       ndevs --remove <alias> [alias...]\n'
         printf '       ndevs --update-ip <alias> <newip>\n'
+        printf '       ndevs --add <alias> <ip> <user> [port]\n'
         printf '       ndevs --resetall\n'
         ;;
     *)
