@@ -9,13 +9,31 @@ command -v clipso >/dev/null 2>&1 || return 0
 
 _NCAP_BUF="${TMPDIR:-/tmp}/noemap-capture.$$"
 : > "$_NCAP_BUF"
+_NCAP_SKIP=0
 
 exec {_NCAP_SAVED}>&1
 exec 1> >(tee -a "$_NCAP_BUF"); _NCAP_TEE=$!
 
-_ncap_preexec() { : > "$_NCAP_BUF"; }
+_ncap_preexec() {
+    : > "$_NCAP_BUF"
+    _NCAP_SKIP=0
+    # Restore real TTY for programs that need direct terminal access
+    case "${1%% *}" in
+        nvim|vim|vi|nano|less|more|man|htop|top|fzf|ssh|mutt|neomutt)
+            exec 1>&${_NCAP_SAVED}
+            _NCAP_SKIP=1
+            ;;
+    esac
+}
 
 _ncap_precmd() {
+    if (( _NCAP_SKIP )); then
+        # Re-apply tee redirect for next non-TTY command
+        : > "$_NCAP_BUF"
+        exec 1> >(tee -a "$_NCAP_BUF"); _NCAP_TEE=$!
+        _NCAP_SKIP=0
+        return 0
+    fi
     [[ -e "$_NCAP_BUF" ]] || return 0
     sync
     local out
