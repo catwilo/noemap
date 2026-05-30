@@ -30,3 +30,6 @@ Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'interactive' ]"
 # (these tools set NOEMAP_SSH_ROLE=transfer before exec'ing ssh/rsync)
 Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'transfer' ]"
     ControlMaster no
+
+# User per-host overrides (RemoteForward, IdentityFile, etc.)
+Include ~/.ssh/config
