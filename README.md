@@ -13,7 +13,7 @@ zsh for the capture hook.
 
 Idempotent. Symlinks `bin/*` into `~/.local/bin` (or `$PREFIX/bin` on
 Termux) and writes a delimited block to `~/.zshrc` (PATH fallback,
-the `clipc` helper, and the one-shot `ncssh` capture loader). Re-running
+the one-shot `ncssh` capture loader). Re-running
 overwrites the previous block cleanly.
 
 ## Commands

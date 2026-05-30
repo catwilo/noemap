@@ -148,8 +148,6 @@ _do_install() {
         printf '%s\n' "$_beg"
         printf 'case ":$PATH:" in *":%s:"*) ;; *) export PATH="%s:$PATH";; esac\n' "$_bindir" "$_bindir"
         printf '[ -n "$LC_NCSSH" ] && source "%s/lib/capture.zsh"\n' "$BASE"
-        printf 'clipc() { if [ "${1:-}" = -- ]; then shift; printf %%s "$*" | clipso; else clipso; fi; }\n'
-        printf 'compctl -c clipc 2>/dev/null || true\n' 
         printf '%s\n' "$_end"
     } > "$_rc"
     rm -f "$_tmp"

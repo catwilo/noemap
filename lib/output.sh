@@ -121,7 +121,6 @@ render_connect() {
     printf "  %-12s  %s\n" "copy to"    "nscp ./file $_ex:/remote/"
     printf "  %-12s  %s\n" "sync"       "nrsync ./dir/ $_ex:~/backup/"
     printf "  %-12s  %s\n" "clipboard"  "nclip $_ex:/remote/file"
-    printf "  %-12s  %s\n" "run+copy"   "nclipc $_ex -- <cmd>"
     printf '\n'
 }
 
