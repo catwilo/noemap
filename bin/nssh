@@ -98,6 +98,14 @@ if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
     nclip-listen start >/dev/null 2>&1 || true
 fi
 
+# Wire RemoteForward for clipboard if local socket exists
+# NOTE: assumes remote home is /home/<user> (Linux/Debian servers)
+_local_sock="${HOME}/.noemap-clip.sock"
+_remote_sock="/home/${_user}/.local/share/noemap/clip.sock"
+if [ -S "$_local_sock" ]; then
+    set -- -R "${_remote_sock}:${_local_sock}" "$@"
+fi
+
 if [ -f "$CFG" ]; then
     exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
 else
