@@ -202,7 +202,7 @@ PLIST
   launchctl load "$HOME/Library/LaunchAgents/io.clipd.agent.plist"
   echo "macOS: LaunchAgent io.clipd.agent cargado"
 else
-  LOCAL_SOCK="$HOME/.noemap-clip.sock"
+  LOCAL_SOCK="$HOME/.local/share/noemap/clip.sock"
   if command -v termux-clipboard-set >/dev/null 2>&1; then CLIP_CMD=termux-clipboard-set
   elif command -v wl-copy >/dev/null 2>&1; then CLIP_CMD=wl-copy
   elif command -v xclip >/dev/null 2>&1; then CLIP_CMD="xclip -selection clipboard"

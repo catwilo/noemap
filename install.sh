@@ -144,7 +144,7 @@ if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ]; then
             [ -n "$_user" ] && [ -n "$_ip" ] || continue
             _port="${_port:-22}"
             _srv_sock="/home/${_user}/.local/share/noemap/clip.sock"
-            _loc_sock="${HOME}/.noemap-clip.sock"
+            _loc_sock="${HOME}/.local/share/noemap/clip.sock"
             _beg="# >>> noemap-clip ${_alias} >>>"
             _end="# <<< noemap-clip ${_alias} <<<"
             _rc="${HOME}/.ssh/config"
@@ -199,7 +199,7 @@ PLIST
             [ -n "$_user" ] && [ -n "$_ip" ] || continue
             _port="${_port:-22}"
             _srv_sock="/data/data/com.termux/files/home/.local/share/noemap/clip.sock"
-            _loc_sock="${HOME}/.noemap-clip.sock"
+            _loc_sock="${HOME}/.local/share/noemap/clip.sock"
             _beg="# >>> noemap-clip ${_alias} >>>"
             _end="# <<< noemap-clip ${_alias} <<<"
             _rc="${HOME}/.ssh/config"
