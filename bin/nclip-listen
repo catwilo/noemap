@@ -66,9 +66,22 @@ _do_start() {
     # loop: accept one connection → write to tmp → verify non-empty → copy to clipboard
     # uses tmp file to avoid pipe buffering issues and guard against empty payloads
     (
-        _tmp_clip="${TMPDIR:-/tmp}/nclip-recv.$$"
         while true; do
-            nc -lU "$SOCK" > "$_tmp_clip" 2>/dev/null || true
+            _tmp_clip="${TMPDIR:-/tmp}/nclip-recv.$$"
+            python3 -c '
+import socket,sys
+p=sys.argv[1];o=sys.argv[2]
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,524288)
+s.bind(p);s.listen(1)
+c,_=s.accept();d=b""
+while True:
+    chunk=c.recv(65536)
+    if not chunk:break
+    d+=chunk
+c.close();s.close()
+open(o,"wb").write(d)
+' "$SOCK" "$_tmp_clip" 2>/dev/null || true
             if [ -s "$_tmp_clip" ]; then
                 cp "$_tmp_clip" "$CLIP_CACHE"
                 setsid "$_clip_cmd" < "$_tmp_clip" 2>/dev/null || "$_clip_cmd" < "$_tmp_clip" || true
@@ -88,7 +101,20 @@ _do_foreground() {
     mkdir -p "$(dirname "$CLIP_CACHE")"
     _tmp_clip="${TMPDIR:-/tmp}/nclip-recv.$$"
     while true; do
-        nc -lU "$SOCK" > "$_tmp_clip" 2>/dev/null || true
+        python3 -c '
+import socket,sys
+p=sys.argv[1];o=sys.argv[2]
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,524288)
+s.bind(p);s.listen(1)
+c,_=s.accept();d=b""
+while True:
+    chunk=c.recv(65536)
+    if not chunk:break
+    d+=chunk
+c.close();s.close()
+open(o,"wb").write(d)
+' "$SOCK" "$_tmp_clip" 2>/dev/null || true
         if [ -s "$_tmp_clip" ]; then
             cp "$_tmp_clip" "$CLIP_CACHE"
             "$_clip_cmd" < "$_tmp_clip" || true
