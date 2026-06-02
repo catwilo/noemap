@@ -71,7 +71,7 @@ _do_start() {
             nc -lU "$SOCK" > "$_tmp_clip" 2>/dev/null || true
             if [ -s "$_tmp_clip" ]; then
                 cp "$_tmp_clip" "$CLIP_CACHE"
-                "$_clip_cmd" < "$_tmp_clip" || true
+                setsid "$_clip_cmd" < "$_tmp_clip" 2>/dev/null || "$_clip_cmd" < "$_tmp_clip" || true
             fi
             rm -f "$_tmp_clip"
         done
