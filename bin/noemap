@@ -244,6 +244,7 @@ NOEMAP_IFACE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --ports)    NOEMAP_FULL_PORTS=1 ;;
+        -f|--fresh) ndevs --resetall ;;
         --deep)     NOEMAP_DEEP=1 ;;
         -i)         shift; [ -n "${1:-}" ] || { printf '[ERROR] -i requires an interface name\n' >&2; exit 1; }; NOEMAP_IFACE="$1" ;;
         -i*)        NOEMAP_IFACE="${1#-i}" ;;

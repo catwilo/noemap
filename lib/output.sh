@@ -166,7 +166,7 @@ prompt_new_hosts() {
             /^[[:space:]]*$/{next}/^#/{next}
             $1==a{found=1;exit}END{exit !found}
         ' "$_devdb" 2>/dev/null; do
-            _n=$(( _n + 1 )); _default_alias="${_base_alias}${_n}"
+            _n=$(( _n + 1 )); _default_alias="${_base_alias%b}${_n}"
         done
 
         _alias=""
