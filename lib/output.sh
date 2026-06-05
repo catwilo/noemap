@@ -156,12 +156,17 @@ prompt_new_hosts() {
         printf "  ${_C_YELLOW}%s${_C_RESET}  os=%-14s  port=%s\n" \
             "$_ip" "$_type" "${_ssh_port:-22}"
 
-        _n=0; _default_alias="d${_n}"
+        case "$_type" in
+            android-ssh) _base_alias="tx" ;;
+            mac)         _base_alias="mac" ;;
+            *)           _base_alias="db" ;;
+        esac
+        _n=0; _default_alias="$_base_alias"
         while awk -F'|' -v a="$_default_alias" '
             /^[[:space:]]*$/{next}/^#/{next}
             $1==a{found=1;exit}END{exit !found}
         ' "$_devdb" 2>/dev/null; do
-            _n=$(( _n + 1 )); _default_alias="d${_n}"
+            _n=$(( _n + 1 )); _default_alias="${_base_alias}${_n}"
         done
 
         _alias=""
@@ -201,7 +206,11 @@ prompt_new_hosts() {
             printf '\n'; continue
         fi
 
-        _default_user="u"; _reg_user=""
+        case "$_type" in
+            mac) _default_user="pelucainestable" ;;
+            *)   _default_user="u" ;;
+        esac
+        _reg_user=""
         while [ -z "$_reg_user" ]; do
             printf "  User [%s]: " "$_default_user"
             read -r _input_user </dev/tty || _input_user=""
