@@ -52,7 +52,7 @@ chmod 700 "$HOME/.local/share/noemap"
 _copy() {
     _src="$SCRIPT_DIR/$1"
     _dst="$BASE/$1"
-    if [ -f "$_src" ]; then cp "$_src" "$_dst"; \
+    if [ -f "$_src" ]; then cp "$_src" "$_dst" 2>/dev/null || true; \
     else log WARN "source not found, skipping: $1"; fi
 }
 
@@ -143,7 +143,7 @@ if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ]; then
             case "$_alias" in "#"*|"") continue ;; esac
             [ -n "$_user" ] && [ -n "$_ip" ] || continue
             _port="${_port:-22}"
-            _srv_sock="/home/${_user}/.local/share/noemap/clip.sock"
+            _srv_sock="/home/${_user}/.noemap-clip.sock"
             _loc_sock="${HOME}/.noemap-clip.sock"
             _beg="# >>> noemap-clip ${_alias} >>>"
             _end="# <<< noemap-clip ${_alias} <<<"
@@ -166,6 +166,13 @@ if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ]; then
             log INFO "RemoteForward wired for alias: ${_alias}"
         done < "$BASE/state/devices.db"
     fi
+    # autostart nclip-listen on Termux boot
+    _boot_dir="${HOME}/.termux/boot"
+    _boot_script="${_boot_dir}/nclip-listen"
+    mkdir -p "$_boot_dir"
+    printf '#!/data/data/com.termux/files/usr/bin/bash\nnclip-listen start\n' > "$_boot_script"
+    chmod +x "$_boot_script"
+    log OK "Termux boot autostart: ${_boot_script}"
 
 # ---------------------------------------------------------------------------
 # macOS client — clipboard listener (nclip-listen) via LaunchAgent +
