@@ -1,0 +1,96 @@
+#!/bin/sh
+# nclip-send — send local stdin to a remote device's clipboard via SSH + clipso
+#
+# Usage:  <cmd> | nclip-send <alias>
+#         nclip-send <alias> < file
+#
+# Resolves the alias from devices.db, streams local stdin over SSH, and pipes
+# it into the remote clipso so it lands in that device's native clipboard.
+# Inverse of nclip (which pulls remote->local). One destination, explicit.
+#
+# Environment:
+#   NOEMAP_BASE   — override project root  (default: ~/unix-toolkit-tools/noemap)
+#
+# Exit codes:
+#   0  — content delivered to remote clipboard
+#   1  — argument error, alias not found, or SSH failure
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CFG="$BASE/config/ssh_config"
+
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: <cmd> | nclip-send <alias>\n'
+        printf '  Send local stdin to a remote device clipboard via SSH + clipso.\n'
+        printf '  Alias resolved from devices.db. One explicit destination.\n'
+        exit 0
+        ;;
+esac
+
+[ $# -eq 1 ] || {
+    printf 'usage: <cmd> | nclip-send <alias>\n' >&2
+    exit 1
+}
+
+_alias="$1"
+
+_row="$(resolve_device "$_alias" "$DB")"
+_ip="$(printf '%s\n'   "$_row" | cut -d'|' -f1)"
+_user="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+_port="$(printf '%s\n' "$_row" | cut -d'|' -f3)"
+
+[ -n "$_ip" ] && [ -n "$_user" ] || {
+    log ERROR "could not resolve alias: $_alias"
+    exit 1
+}
+
+# Buffer stdin so we can verify it is non-empty before opening SSH.
+_tmp="$(mktemp "${TMPDIR:-/tmp}/nclip-send.XXXXXX")"
+trap 'rm -f "$_tmp"' EXIT INT TERM
+cat > "$_tmp"
+
+[ -s "$_tmp" ] || { log ERROR "empty input — nothing to send"; exit 1; }
+
+# Remote clipso reads stdin and sets the remote native clipboard.
+# CLIPSO_MESH unset on purpose — no chaining, single hop only.
+_send() {
+    if [ -f "$CFG" ]; then
+        ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 \
+            "${_user}@${_ip}" 'clipso -q' < "$_tmp"
+    else
+        ssh -p "$_port" -o ConnectTimeout=5 \
+            "${_user}@${_ip}" 'clipso -q' < "$_tmp"
+    fi
+}
+
+if _send; then
+    log OK "sent to ${_alias} clipboard ($(wc -c < "$_tmp" | tr -d ' ') bytes)"
+else
+    log ERROR "SSH transfer failed — check host, port, key auth, remote clipso"
+    exit 1
+fi
