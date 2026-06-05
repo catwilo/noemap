@@ -120,6 +120,25 @@ RC_BLOCK
 fi
 
 # ---------------------------------------------------------------------------
+# Patch .zshenv — PATH only (loaded by nssh / non-interactive shells)
+# ---------------------------------------------------------------------------
+ZSHENV="$HOME/.zshenv"
+MARKER_ENV="# >>> noemap-env"
+if grep -qF "$MARKER_ENV" "$ZSHENV" 2>/dev/null; then
+    log INFO ".zshenv already patched — skipping"
+else
+    [ -f "$ZSHENV" ] || touch "$ZSHENV"
+    cat >> "$ZSHENV" << ENV_BLOCK
+
+$MARKER_ENV
+export NOEMAP_BASE="$BASE"
+export PATH="\$PATH:$BASE/bin"
+# <<< noemap-env
+ENV_BLOCK
+    log OK "patched: $ZSHENV"
+fi
+
+# ---------------------------------------------------------------------------
 # clipso — install by default from ~/unix-toolkit/clipso/clipso.sh
 # ---------------------------------------------------------------------------
 CLIPSO_SCRIPT="${HOME}/unix-toolkit-tools/clipso/clipso.sh"
