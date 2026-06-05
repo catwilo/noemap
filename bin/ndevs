@@ -59,14 +59,28 @@ _has_data() {
 }
 
 _print_table() {
-    printf '%-12s %-16s %-12s %s\n' ALIAS IP USER PORT
-    printf '%-12s %-16s %-12s %s\n' ------------ ---------------- ------------ ----
     awk -F'|' '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
+        /^[[:space:]]*$/ { next } /^#/ { next }
         NF >= 2 {
             port = ($4 == "" ? "22" : $4)
-            printf "%-12s %-16s %-12s %s\n", $1, $2, $3, port
+            if(length($1)>w1) w1=length($1)
+            if(length($2)>w2) w2=length($2)
+            if(length($3)>w3) w3=length($3)
+            rows[NR]=$1 "|" $2 "|" $3 "|" port
+        }
+        END {
+            w1=(w1>5?w1:5); w2=(w2>4?w2:4); w3=(w3>4?w3:4)
+            fmt="%-" w1 "s  %-" w2 "s  %-" w3 "s  %s\n"
+            dash1=substr("----------------------------------------",1,w1)
+            dash2=substr("----------------------------------------",1,w2)
+            dash3=substr("----------------------------------------",1,w3)
+            printf fmt, "ALIAS","IP","USER","PORT"
+            printf fmt, dash1, dash2, dash3, "----"
+            for(i=1;i<=NR;i++) {
+                if(!(i in rows)) continue
+                n=split(rows[i],a,"|")
+                printf fmt, a[1],a[2],a[3],a[4]
+            }
         }
     ' "$DB"
 }

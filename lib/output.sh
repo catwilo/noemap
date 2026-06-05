@@ -80,27 +80,57 @@ render_registered_devices() {
         "$_devdb" 2>/dev/null || return 0
 
     printf "${_C_BOLD}${_C_CYAN}  REGISTERED DEVICES${_C_RESET}\n\n"
-    printf "${_C_BOLD}  %-12s  %-16s  %-6s  %-10s  %s${_C_RESET}\n" \
-        "ALIAS" "IP" "PORT" "USER" "OS"
-    printf "  %s  %s  %s  %s  %s\n" \
-        "$(_pad 12)" "$(_pad 16)" "$(_pad 6)" "$(_pad 10)" "$(_pad 12)"
 
-    while IFS='|' read -r _alias _ip _user _port || [ -n "$_alias" ]; do
-        case "$_alias" in '#'*|'') continue ;; esac
-        [ -n "$_ip" ] || continue
-        _port="${_port:-22}"
-        _user="${_user:-?}"
-        _os="-"
-        if [ -f "$_hosts_db" ]; then
-            _os="$(awk -F'|' -v ip="$_ip" '
-                /^[[:space:]]*$/{ next } /^#/{ next }
-                $1==ip{ print $2; exit }
-            ' "$_hosts_db" 2>/dev/null)"
-            [ -n "$_os" ] || _os="-"
-        fi
-        printf "  ${_C_GREEN}%-12s${_C_RESET}  %-16s  %-6s  %-10s  %s\n" \
-            "$_alias" "$_ip" "$_port" "$_user" "$_os"
-    done < "$_devdb"
+    # build rows + compute dynamic column widths in one awk pass
+    _rows_tmp="$(mktemp "${TMPDIR:-/tmp}/noemap-rows.XXXXXX")"
+    awk -F'|' -v hdb="${_hosts_db:-}" '
+        /^[[:space:]]*$/{next}/^#/{next}NF<2{next}
+        {
+            alias=$1; ip=$2; user=($3==""?"?":$3); port=($4==""?"22":$4)
+            os="-"
+            if(hdb!="" && (getline ln < "/dev/null") >= 0) {
+                while((getline ln < hdb)>0) {
+                    split(ln,a,"|"); if(a[1]==ip){os=a[2];break}
+                }
+                close(hdb)
+            }
+            rows[NR]=alias "|" ip "|" port "|" user "|" os
+            if(length(alias)>w1) w1=length(alias)
+            if(length(ip)>w2)    w2=length(ip)
+            if(length(port)>w3)  w3=length(port)
+            if(length(user)>w4)  w4=length(user)
+            if(length(os)>w5)    w5=length(os)
+            n=NR
+        }
+        END {
+            w1=(w1>5?w1:5); w2=(w2>2?w2:2); w3=(w3>4?w3:4); w4=(w4>4?w4:4); w5=(w5>2?w5:2)
+            print w1 " " w2 " " w3 " " w4 " " w5
+            for(i=1;i<=n;i++) if(i in rows) print rows[i]
+        }
+    ' "$_devdb" > "$_rows_tmp"
+
+    read -r _w1 _w2 _w3 _w4 _w5 < "$_rows_tmp"
+    _d1="$(printf '%*s' "$_w1" | tr ' ' '-')"
+    _d2="$(printf '%*s' "$_w2" | tr ' ' '-')"
+    _d3="$(printf '%*s' "$_w3" | tr ' ' '-')"
+    _d4="$(printf '%*s' "$_w4" | tr ' ' '-')"
+    _d5="$(printf '%*s' "$_w5" | tr ' ' '-')"
+    printf "  ${_C_BOLD}%-${_w1}s  %-${_w2}s  %-${_w3}s  %-${_w4}s  %s${_C_RESET}\n" \
+        "ALIAS" "IP" "PORT" "USER" "OS"
+    printf "  %s  %s  %s  %s  %s\n" "$_d1" "$_d2" "$_d3" "$_d4" "$_d5"
+
+    tail -n +2 "$_rows_tmp" | while IFS='|' read -r _a _i _p _u _o; do
+        [ -n "$_a" ] || continue
+        _c_os="${_C_RESET}"
+        case "$_o" in
+            mac)          _c_os="${_C_CYAN}"  ;;
+            android-ssh)  _c_os="${_C_GREEN}" ;;
+            linux*|unix*) _c_os="${_C_BOLD}"  ;;
+        esac
+        printf "  ${_C_GREEN}%-${_w1}s${_C_RESET}  ${_C_CYAN}%-${_w2}s${_C_RESET}  ${_C_YELLOW}%-${_w3}s${_C_RESET}  %-${_w4}s  ${_c_os}%s${_C_RESET}\n" \
+            "$_a" "$_i" "$_p" "$_u" "$_o"
+    done
+    rm -f "$_rows_tmp"
     printf '\n'
 }
 
