@@ -123,6 +123,7 @@ fi
 # Patch .zshenv — PATH only (loaded by nssh / non-interactive shells)
 # ---------------------------------------------------------------------------
 ZSHENV="$HOME/.zshenv"
+[ -L "$ZSHENV" ] && { log INFO ".zshenv is a symlink — writing to .zshenv.local instead"; ZSHENV="$HOME/.zshenv.local"; }
 MARKER_ENV="# >>> noemap-env"
 if grep -qF "$MARKER_ENV" "$ZSHENV" 2>/dev/null; then
     log INFO ".zshenv already patched — skipping"
