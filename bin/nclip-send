@@ -80,16 +80,16 @@ cat > "$_tmp"
 # CLIPSO_MESH unset on purpose — no chaining, single hop only.
 _send() {
     if [ -f "$CFG" ]; then
-        ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 \
-            "${_user}@${_ip}" 'clipso -q' < "$_tmp"
+        ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso -q' < "$_tmp" 2>/dev/null
     else
-        ssh -p "$_port" -o ConnectTimeout=5 \
-            "${_user}@${_ip}" 'clipso -q' < "$_tmp"
+        ssh -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso -q' < "$_tmp" 2>/dev/null
     fi
 }
 
 if _send; then
-    log OK "sent to ${_alias} clipboard ($(wc -c < "$_tmp" | tr -d ' ') bytes)"
+    :
 else
     log ERROR "SSH transfer failed — check host, port, key auth, remote clipso"
     exit 1
