@@ -80,11 +80,11 @@ cat > "$_tmp"
 # CLIPSO_MESH unset on purpose — no chaining, single hop only.
 _send() {
     if [ -f "$CFG" ]; then
-        NOEMAP_SSH_ROLE=interactive ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
-            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso -q' < "$_tmp" 2>/dev/null
+        ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso' < "$_tmp" 2>/dev/null
     else
-        NOEMAP_SSH_ROLE=interactive ssh -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
-            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso -q' < "$_tmp" 2>/dev/null
+        ssh -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso' < "$_tmp" 2>/dev/null
     fi
 }
 
