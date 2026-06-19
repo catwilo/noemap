@@ -27,6 +27,7 @@ All commands accept `-h` for usage.
 - `ndevs` — manage the device database (edit, rename, remove, update-ip,
   resetall).
 - `nssh <alias> [cmd...]` — SSH to an alias; forwards an optional command.
+  - `--raw` — bypass clipboard auto-copy; stream raw output (for redirection/piping).
 - `ncssh <alias> [cmd...]` — like nssh, but the last command's output is
   mirrored to the clipboard (server-local and the client terminal via
   OSC52, through clipso).

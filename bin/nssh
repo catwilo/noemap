@@ -51,6 +51,9 @@ case "${1:-}" in
         ;;
 esac
 
+_raw=0
+case "${1:-}" in --raw) _raw=1; shift ;; esac
+
 [ $# -ge 1 ] || {
     printf 'usage: nssh <alias> [command...]\n' >&2
     exit 1
@@ -80,6 +83,13 @@ _clipso_bin=""
 for _p in "$HOME/unix-toolkit-tools/clipso/clipso.sh" "$HOME/.local/bin/clipso" "$(command -v clipso 2>/dev/null || true)"; do
     [ -x "$_p" ] && { _clipso_bin="$_p"; break; }
 done
+if [ "$_raw" = 1 ]; then
+    if [ -f "$CFG" ]; then
+        exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
+    else
+        exec ssh -p "$_port" "${_user}@${_ip}" "$@"
+    fi
+fi
 if [ $# -gt 0 ] && [ -n "$_clipso_bin" ]; then
     _nssh_tmp="$(mktemp)"
     _nssh_rc=0
