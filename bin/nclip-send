@@ -81,9 +81,11 @@ cat > "$_tmp"
 _send() {
     if [ -f "$CFG" ]; then
         ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm/%r@%h:%p" -o ControlPersist=4h \
             "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso' < "$_tmp" 2>/dev/null
     else
         ssh -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
+            -o ControlMaster=auto -o ControlPath="$HOME/.ssh/cm/%r@%h:%p" -o ControlPersist=4h \
             "${_user}@${_ip}" 'PATH=$HOME/.local/bin:$PATH CLIPSO_NO_SUMMARY=1 clipso' < "$_tmp" 2>/dev/null
     fi
 }
