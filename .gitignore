@@ -8,3 +8,6 @@ state/devices.db
 # keep the template
 !state/devices.db.example
 state/*.pid
+state/clip-dir.conf
+# mkit backups
+*.bak

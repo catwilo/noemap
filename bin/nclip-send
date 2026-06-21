@@ -32,6 +32,7 @@ BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
 LIB="$BASE/lib"
 DB="$BASE/state/devices.db"
 CFG="$BASE/config/ssh_config"
+TCP_PORT="${CLIP_TCP_PORT:-9988}"
 
 for _mod in util.sh devices.sh; do
     _path="$LIB/$_mod"
@@ -78,6 +79,20 @@ cat > "$_tmp"
 
 # Remote clipso reads stdin and sets the remote native clipboard.
 # CLIPSO_MESH unset on purpose — no chaining, single hop only.
+_send_nc() {
+    [ -n "$_ip" ] || return 1
+    if command -v nc >/dev/null 2>&1; then
+        case "$(nc -h 2>&1)" in
+            *-N*) nc -N "$_ip" "$TCP_PORT" < "$_tmp" ;;
+            *)    nc "$_ip" "$TCP_PORT" < "$_tmp" ;;
+        esac
+    elif command -v ncat >/dev/null 2>&1; then
+        ncat "$_ip" "$TCP_PORT" < "$_tmp"
+    else
+        return 1
+    fi
+}
+
 _send() {
     if [ -f "$CFG" ]; then
         ssh -F "$CFG" -p "$_port" -o ConnectTimeout=5 -o BatchMode=yes \
@@ -90,9 +105,11 @@ _send() {
     fi
 }
 
-if _send; then
+if _send_nc 2>/dev/null; then
     :
+elif _send; then
+    log WARN "nc fast-path unavailable; used SSH fallback (nclip-listen start-tcp on dst?)"
 else
-    log ERROR "SSH transfer failed — check host, port, key auth, remote clipso"
+    log ERROR "transfer failed: nc and SSH both failed; check host, port, key auth, remote clipso/listener"
     exit 1
 fi

@@ -1,0 +1,143 @@
+#!/bin/sh
+# nclip-set  define clipboard direction between two nodes (src sends, dst receives)
+#
+# Usage:  nclip-set <src-alias> <dst-alias>
+#         nclip-set status
+#         nclip-set clear
+#
+# Writes direction config to state/clip-dir.conf, starts nclip-listen on the
+# dst node (via nssh), then runs a smoke-test: pushes a token from src to dst
+# with nclip-send and reads it back from dst's clipso cache to confirm.
+#
+# Direction is EXPLICIT, not inferred from who initiates ssh. No persistence
+# across reboots -- re-run each session.
+#
+# Environment:
+#   NOEMAP_BASE   override project root (default: ~/unix-toolkit-tools/noemap)
+#
+# Exit codes:
+#   0   direction set and smoke-test passed (or status/clear ok)
+#   1   argument error, alias not found, remote start failure, or smoke-test FAIL
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+LIB="$BASE/lib"
+DB="$BASE/state/devices.db"
+CONF="$BASE/state/clip-dir.conf"
+
+NCLIP_SEND="$_bindir/nclip-send"
+NSSH="$_bindir/nssh"
+
+for _mod in util.sh devices.sh; do
+    _path="$LIB/$_mod"
+    if [ ! -f "$_path" ]; then
+        printf '[ERROR] missing module: %s\n' "$_mod" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_path"
+done
+
+# --- subcommands: status / clear ---------------------------------------
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: nclip-set <src-alias> <dst-alias>\n'
+        printf '       nclip-set status\n'
+        printf '       nclip-set clear\n'
+        printf '  Define clipboard direction (src sends, dst receives).\n'
+        printf '  Starts nclip-listen on dst and runs a smoke-test.\n'
+        exit 0
+        ;;
+    status)
+        if [ -f "$CONF" ]; then
+            printf '[OK]    direction config:\n' >&2
+            cat "$CONF"
+        else
+            printf '[INFO]  no direction set (%s missing)\n' "$CONF" >&2
+        fi
+        exit 0
+        ;;
+    clear)
+        # Stop the listener on dst (read from config before deleting it).
+        if [ -f "$CONF" ]; then
+            _old_dst="$(. "$CONF" 2>/dev/null; printf '%s' "${CLIP_DST:-}")"
+            if [ -n "$_old_dst" ]; then
+                if "$NSSH" "$_old_dst" 'nclip-listen stop-tcp' >/dev/null 2>&1; then
+                    printf '[OK]    nclip-listen stopped on %s\n' "$_old_dst" >&2
+                else
+                    printf '[WARN]  could not stop nclip-listen on %s\n' "$_old_dst" >&2
+                fi
+            fi
+        fi
+        rm -f "$CONF"
+        printf '[OK]    direction cleared\n' >&2
+        exit 0
+        ;;
+esac
+
+[ $# -eq 2 ] || {
+    printf 'usage: nclip-set <src-alias> <dst-alias>\n' >&2
+    exit 1
+}
+
+_src="$1"
+_dst="$2"
+
+[ "$_src" != "$_dst" ] || {
+    log ERROR "src and dst must differ (got: $_src)"
+    exit 1
+}
+
+# Validate both aliases resolve before doing anything stateful.
+resolve_device "$_src" "$DB" >/dev/null
+resolve_device "$_dst" "$DB" >/dev/null
+
+# --- 1. write direction config -----------------------------------------
+mkdir -p "$(dirname "$CONF")"
+_tmp_conf="$(mktemp "${TMPDIR:-/tmp}/clip-dir.XXXXXX")"
+{
+    printf '# nclip direction  written by nclip-set\n'
+    printf 'CLIP_SRC=%s\n' "$_src"
+    printf 'CLIP_DST=%s\n' "$_dst"
+} > "$_tmp_conf"
+mv -f "$_tmp_conf" "$CONF"
+printf '[OK]    direction written: %s -> %s\n' "$_src" "$_dst" >&2
+
+# --- 2. start nclip-listen on dst via nssh -----------------------------
+# nclip-listen start is idempotent (no-op if already running).
+if ! "$NSSH" "$_dst" 'nclip-listen start-tcp' >/dev/null 2>&1; then
+    log ERROR "failed to start nclip-listen TCP on '$_dst'"
+    exit 1
+fi
+printf '[OK]    nclip-listen TCP started on %s\n' "$_dst" >&2
+
+# --- 3. smoke-test: send token src->dst, read it back ------------------
+_token="nclip-test-$$-$(date +%s)"
+if ! printf '%s' "$_token" | "$NCLIP_SEND" "$_dst" >/dev/null 2>&1; then
+    log ERROR "smoke-test send failed (src '$_src' -> dst '$_dst')"
+    exit 1
+fi
+
+# Read dst's clipso cache and compare.
+_got="$("$NSSH" "$_dst" 'cat "${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last"' 2>/dev/null || true)"
+
+# --- 4. OK / FAIL ------------------------------------------------------
+if [ "$_got" = "$_token" ]; then
+    printf '[OK]    smoke-test PASS  %s -> %s\n' "$_src" "$_dst" >&2
+    exit 0
+else
+    log ERROR "smoke-test FAIL  sent '$_token' but dst returned '$_got'"
+    exit 1
+fi
