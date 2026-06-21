@@ -36,10 +36,18 @@ else
     done
 fi
 _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
-BASE="${NOEMAP_BASE:-$(dirname "$_bindir")}"
-LIB="$BASE/lib"
-DB="$BASE/state/devices.db"
-CFG="$BASE/config/ssh_config"
+# Lib/data resolution (standalone-copy model): installer dir, then default, then repo.
+_repo_base="${NOEMAP_BASE:-$(dirname "$_bindir")}"
+if [ -n "${NOEMAP_DATA:-}" ] && [ -d "${NOEMAP_DATA}/lib" ]; then
+    DATA="$NOEMAP_DATA"
+elif [ -d "$HOME/.local/share/noemap/lib" ]; then
+    DATA="$HOME/.local/share/noemap"
+else
+    DATA="$_repo_base"
+fi
+LIB="$DATA/lib"
+DB="$DATA/state/devices.db"
+CFG="$DATA/config/ssh_config"
 
 # -----------------------------------------------------------------------
 # Load shared helpers
