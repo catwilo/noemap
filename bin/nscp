@@ -106,6 +106,19 @@ _is_remote "$_src_raw" && _src_is_remote=true
 _is_remote "$_dst_raw" && _dst_is_remote=true
 
 # -----------------------------------------------------------------------
+# Resolve port for an alias:/path argument, if alias exists in devices.db
+# -----------------------------------------------------------------------
+_port_for() {
+    case "$1" in
+        *:*)
+            _p_alias="${1%%:*}"
+            _p_line="$(awk -F'|' -v a="$_p_alias" '$1 == a { print; exit }' "$DB" 2>/dev/null || true)"
+            [ -n "$_p_line" ] && printf '%s\n' "$_p_line" | cut -d'|' -f4
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------
 # Local source validations (must exist and be readable before we connect)
 # -----------------------------------------------------------------------
 if [ "$_src_is_remote" = false ]; then
@@ -139,6 +152,10 @@ fi
 _src="$(resolve_scp_target "$_src_raw" "$DB")"
 _dst="$(resolve_scp_target "$_dst_raw" "$DB")"
 
+# Port comes from devices.db, same alias resolution path as host/user.
+_port="$(_port_for "$_src_raw")"
+[ -z "$_port" ] && _port="$(_port_for "$_dst_raw")"
+
 # -----------------------------------------------------------------------
 # Build scp flags
 # -----------------------------------------------------------------------
@@ -146,6 +163,9 @@ _r_flag=""
 if [ "$_recursive" = true ]; then
     _r_flag="-r"
 fi
+
+_p_flag=""
+[ -n "$_port" ] && _p_flag="-P $_port"
 
 # Disable ControlMaster for non-interactive transfers
 export NOEMAP_SSH_ROLE=transfer
@@ -160,6 +180,7 @@ if [ -f "$CFG" ]; then
         -F "$CFG" \
         -o Compression=yes \
         -o ControlMaster=no \
+        $_p_flag \
         $_r_flag \
         "$_src" "$_dst"
 else
@@ -169,6 +190,7 @@ else
         -T \
         -o Compression=yes \
         -o ControlMaster=no \
+        $_p_flag \
         $_r_flag \
         "$_src" "$_dst"
 fi
