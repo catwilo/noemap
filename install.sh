@@ -140,6 +140,21 @@ RC_BLOCK
 fi
 
 # ---------------------------------------------------------------------------
+# Ensure BINDIR on PATH (only if missing; respects versioned-dotfile symlinks)
+# ---------------------------------------------------------------------------
+case ":$PATH:" in
+    *":$BINDIR:"*) log INFO "PATH already includes $BINDIR" ;;
+    *)
+        if [ -L "$RC_FILE" ]; then
+            log WARN "$RC_FILE is a symlink (versioned dotfile)  add manually: export PATH=\"$BINDIR:\$PATH\""
+        else
+            printf '\nexport PATH="%s:$PATH"  # noemap bindir\n' "$BINDIR" >> "$RC_FILE"
+            log OK "added $BINDIR to PATH in $RC_FILE"
+        fi
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # clipso (best-effort)
 # ---------------------------------------------------------------------------
 CLIPSO_INSTALL="${HOME}/unix-toolkit-tools/clipso/install.sh"
@@ -148,6 +163,15 @@ if [ -f "$CLIPSO_INSTALL" ]; then
     bash "$CLIPSO_INSTALL" || log WARN "clipso install failed"
 else
     log WARN "clipso install.sh not found  clipboard features may be limited"
+fi
+
+# ---------------------------------------------------------------------------
+# Post-install verification: prove an installed tool resolves its libs.
+# ---------------------------------------------------------------------------
+if NOEMAP_DATA="$DATADIR" "$BINDIR/ndevs" >/dev/null 2>&1; then
+    log OK "post-install check passed (ndevs runs standalone)"
+else
+    fail "post-install check FAILED  ndevs could not run from $BINDIR (libs at $LIBDIR?)"
 fi
 
 printf '\n'
