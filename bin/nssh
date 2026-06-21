@@ -77,18 +77,10 @@ _user="$(_ensure_user "$_name" "$DB" "$_user")"
 export NOEMAP_SSH_ROLE=interactive
 
 
-# Start clipboard forward listener only for interactive sessions (Termux client)
+# Start clipboard listener on-demand for interactive sessions; stop on exit
 if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
     nclip-listen start >/dev/null 2>&1 || true
-fi
-
-
-# Wire RemoteForward for clipboard if local socket exists
-# NOTE: assumes remote home is /home/<user> (Linux/Debian servers)
-_local_sock="${HOME}/.noemap-clip.sock"
-_remote_sock="/home/${_user}/.noemap-clip.sock"
-if [ -S "$_local_sock" ]; then
-    set -- -R "${_remote_sock}:${_local_sock}" "$@"
+    trap 'nclip-listen stop >/dev/null 2>&1 || true' EXIT INT TERM
 fi
 
 if [ -f "$CFG" ]; then
