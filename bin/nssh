@@ -51,8 +51,6 @@ case "${1:-}" in
         ;;
 esac
 
-_raw=0
-case "${1:-}" in --raw) _raw=1; shift ;; esac
 
 [ $# -ge 1 ] || {
     printf 'usage: nssh <alias> [command...]\n' >&2
@@ -78,32 +76,6 @@ _user="$(_ensure_user "$_name" "$DB" "$_user")"
 # Signal to ssh_config which Match block to activate
 export NOEMAP_SSH_ROLE=interactive
 
-# command mode — auto-copy output to clipboard via clipso
-_clipso_bin=""
-for _p in "$HOME/unix-toolkit-tools/clipso/clipso.sh" "$HOME/.local/bin/clipso" "$(command -v clipso 2>/dev/null || true)"; do
-    [ -x "$_p" ] && { _clipso_bin="$_p"; break; }
-done
-if [ "$_raw" = 1 ]; then
-    if [ -f "$CFG" ]; then
-        exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
-    else
-        exec ssh -p "$_port" "${_user}@${_ip}" "$@"
-    fi
-fi
-if [ $# -gt 0 ] && [ -n "$_clipso_bin" ]; then
-    _nssh_tmp="$(mktemp)"
-    _nssh_rc=0
-    if [ -f "$CFG" ]; then
-        ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
-    else
-        ssh -p "$_port" "${_user}@${_ip}" "$@" > "$_nssh_tmp" 2>&1 || _nssh_rc=$?
-    fi
-    if [ -s "$_nssh_tmp" ]; then
-        CLIPSO_NO_SPINNER=1 CLIPSO_FORWARD_LABEL="$_name" "$_clipso_bin" < "$_nssh_tmp"
-    fi
-    rm -f "$_nssh_tmp"
-    exit "$_nssh_rc"
-fi
 
 # Start clipboard forward listener only for interactive sessions (Termux client)
 if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
