@@ -108,6 +108,27 @@ _alias_exists() {
     [ -n "$_row" ]
 }
 
+# _snapshot_db alias — save a timestamped copy of devices.db under the user
+# state dir (NEVER in the repo: install.sh only seeds state/devices.db once
+# and never overwrites). Used before any destructive write so --rollback can
+# restore. Prints the snapshot path.
+_snapshot_db() {
+    _snap_alias="$1"
+    _snap_dir="$DATA/state/snapshots"
+    mkdir -p "$_snap_dir"
+    _snap_path="$_snap_dir/${_snap_alias}.bak"
+    [ -f "$DB" ] && cp -f "$DB" "$_snap_path"
+    printf '%s\n' "$_snap_path"
+}
+
+# _verify_ssh ip port — returns 0 if the SSH port accepts a TCP connection.
+# Uses nc -z with a 5s timeout. Best-effort: absence of nc is not fatal.
+_verify_ssh() {
+    _vs_ip="$1"; _vs_port="${2:-22}"
+    has_cmd nc || return 0
+    nc -z -w5 "$_vs_ip" "$_vs_port" >/dev/null 2>&1
+}
+
 # _prompt_field label current — prompts user; returns new value or current if empty.
 _prompt_field() {
     _label="$1"
@@ -241,6 +262,9 @@ _cmd_update_ip() {
     [ -n "$_row" ] || { log ERROR "unknown alias: '$_alias'"; exit 1; }
     _old_ip="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
 
+    # snapshot before write so --rollback can restore
+    _snap="$(_snapshot_db "$_alias")"
+
     known_hosts_sync_device "$_alias" "$_old_ip" "$_new_ip"
 
     _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
@@ -252,6 +276,14 @@ _cmd_update_ip() {
     ' "$DB" > "$_tmp_db"
     mv -f "$_tmp_db" "$DB"
     log OK "updated '$_alias': ip $_old_ip → $_new_ip"
+
+    if _verify_ssh "$_new_ip" "$(printf '%s\n' "$_row" | cut -d'|' -f4)"; then
+        log OK "ssh check: $_new_ip reachable"
+    else
+        log WARN "ssh check: $_new_ip not reachable — entry kept; rollback with: ndevs --rollback $_alias"
+    fi
+
+    _propagate_db "$_new_ip"
 }
 
 
@@ -261,8 +293,71 @@ _cmd_add() {
     if [ -f "$DB" ] && grep -q "^${_alias}|" "$DB" 2>/dev/null; then
         log ERROR "alias '$_alias' already exists — use --edit or --rename"; exit 1
     fi
+
+    # snapshot before any write so --rollback can restore
+    _snap="$(_snapshot_db "$_alias")"
+
     printf '%s|%s|%s|%s\n' "$_alias" "$_ip" "$_user" "$_port" >> "$DB"
     log OK "registered '$_alias' ip=$_ip user=$_user port=$_port"
+
+    # verify SSH reachability; the entry stays persistent either way
+    if _verify_ssh "$_ip" "$_port"; then
+        log OK "ssh check: $_ip:$_port reachable"
+    else
+        log WARN "ssh check: $_ip:$_port not reachable — entry kept; rollback with: ndevs --rollback $_alias"
+    fi
+
+    _propagate_db "$_ip"
+}
+
+# _propagate_db skip_ip — push devices.db to every registered LAN node
+# (non-Tailscale IP) via nscp, skipping skip_ip and self. Best-effort:
+# a node that is down is warned, never fatal. Explicit Tailscale propagation
+# is done by --push-vpn, never automatically here.
+_propagate_db() {
+    _skip_ip="${1:-}"
+    [ -f "$DB" ] || return 0
+    has_cmd nscp || { log WARN "nscp not found — skipping db propagation"; return 0; }
+    _remote_path="$HOME/.local/share/noemap/state/devices.db"
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
+    while IFS='|' read -r _pa _pip; do
+        [ -n "$_pa" ] || continue
+        [ "$_pip" = "$_skip_ip" ] && continue
+        case "$_pip" in 100.*) continue ;; esac
+        if nscp "$DB" "${_pa}:${_remote_path}" >/dev/null 2>&1; then
+            log OK "propagated devices.db -> $_pa"
+        else
+            log WARN "propagate to $_pa failed (node down?) — skipped"
+        fi
+    done
+}
+
+# _cmd_rollback alias — restore devices.db from the user-state snapshot.
+_cmd_rollback() {
+    [ $# -ge 1 ] || { printf 'usage: ndevs --rollback <alias>\n' >&2; exit 1; }
+    _alias="$1"
+    _snap_path="$DATA/state/snapshots/${_alias}.bak"
+    [ -f "$_snap_path" ] || { log ERROR "no snapshot for '$_alias' at $_snap_path"; exit 1; }
+    cp -f "$_snap_path" "$DB"
+    log OK "rolled back devices.db from snapshot '$_alias'"
+}
+
+# _cmd_push_vpn — propagate devices.db to all Tailscale (100.*) nodes via nscp.
+# Explicit command, never automatic.
+_cmd_push_vpn() {
+    _require_db
+    has_cmd nscp || { log ERROR "nscp not found"; exit 1; }
+    _remote_path="$HOME/.local/share/noemap/state/devices.db"
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
+    while IFS='|' read -r _pa _pip; do
+        [ -n "$_pa" ] || continue
+        case "$_pip" in 100.*) ;; *) continue ;; esac
+        if nscp "$DB" "${_pa}:${_remote_path}" >/dev/null 2>&1; then
+            log OK "pushed devices.db -> $_pa ($_pip)"
+        else
+            log WARN "push to $_pa ($_pip) failed — skipped"
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -276,6 +371,8 @@ case "${1:-}" in
     --rename)             shift; _cmd_rename "$@" ;;
     --remove)             shift; _cmd_remove "$@" ;;
     --update-ip)          shift; _cmd_update_ip "$@" ;;
+    --rollback)           shift; _cmd_rollback "$@" ;;
+    --push-vpn)           shift; _cmd_push_vpn "$@" ;;
     --resetall)           _cmd_resetall ;;
     -h|--help)
         printf 'usage: ndevs\n'
@@ -284,6 +381,8 @@ case "${1:-}" in
         printf '       ndevs --remove <alias> [alias...]\n'
         printf '       ndevs --update-ip <alias> <newip>\n'
         printf '       ndevs --add <alias> <ip> <user> [port]\n'
+        printf '       ndevs --rollback <alias>\n'
+        printf '       ndevs --push-vpn <alias>\n'
         printf '       ndevs --resetall\n'
         ;;
     *)

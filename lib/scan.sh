@@ -119,6 +119,16 @@ _validate_registered_hosts() {
         [ -n "$_rip" ] || continue
         [ "$_rip" = "$MY_IP" ] && continue   # never remove self
 
+        # Tailscale IPs (100.*) are persistent and not ICMP-reachable from
+        # Android without root -- accept them directly, never ping or purge.
+        case "$_rip" in
+            100.*)
+                log INFO "registered host $_rip: tailscale ip -- accepted (no ping)"
+                printf '%s\n' "$_rip" >> "$_vout"
+                continue
+                ;;
+        esac
+
         if _ping_host "$_rip"; then
             log INFO "registered host $_rip: online — accepted"
             printf '%s\n' "$_rip" >> "$_vout"

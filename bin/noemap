@@ -249,20 +249,18 @@ if [ "${1:-}" = client-setup ]; then _do_client_setup; exit 0; fi
 # ---------------------------------------------------------------------------
 NOEMAP_FULL_PORTS=0
 NOEMAP_DEEP=0
-NOEMAP_VPN=0
 NOEMAP_IFACE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --ports)    NOEMAP_FULL_PORTS=1 ;;
         -f|--fresh) ndevs --resetall ;;
         --deep)     NOEMAP_DEEP=1 ;;
-        --vpn)      NOEMAP_VPN=1 ;;
         -i)         shift; [ -n "${1:-}" ] || { printf '[ERROR] -i requires an interface name\n' >&2; exit 1; }; NOEMAP_IFACE="$1" ;;
         -i*)        NOEMAP_IFACE="${1#-i}" ;;
         -h|--help)  _print_help; exit 0 ;;
         *)
             printf '[ERROR] unknown option: %s\n' "$1" >&2
-            printf 'usage: noemap [--deep] [--ports] [--vpn] [-i <iface>] [-h]\n' >&2
+            printf 'usage: noemap [--deep] [--ports] [-i <iface>] [-h]\n' >&2
             exit 1
             ;;
     esac
@@ -270,7 +268,6 @@ while [ $# -gt 0 ]; do
 done
 export NOEMAP_FULL_PORTS
 export NOEMAP_DEEP
-export NOEMAP_VPN
 export NOEMAP_IFACE
 
 # ---------------------------------------------------------------------------
@@ -310,55 +307,8 @@ fi
 validate_env
 load_cache
 
-if [ "${NOEMAP_VPN:-0}" = "1" ]; then
-    _vpn_ip=""
-    _vpn_iface=""
-    # detect VPN interface: tun* or tailscale* -- ifconfig no-args (Termux safe)
-    # detect VPN iface: supports both ifconfig (multiline) and ip -br addr (single-line)
-    # ip -br addr format: "tailscale0  UNKNOWN  100.x.x.x/32 ..."
-    # ifconfig format:    "tun0: flags=...\n  inet 100.x.x.x ..."
-    if ip -br addr show 2>/dev/null | grep -qE "^(tun|tailscale)"; then
-        ip -br addr show 2>/dev/null | while IFS= read -r _line; do
-            _iface="${_line%% *}"
-            case "$_iface" in tun*|tailscale*) ;; *) continue ;; esac
-            _ip="$(printf '%s\n' "$_line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-            [ -n "$_ip" ] && printf '%s %s\n' "$_iface" "$_ip" > "$BASE/state/vpn_detected.tmp" && break
-        done
-    elif ifconfig 2>/dev/null | grep -qE "^(tun|tailscale)"; then
-        _cur_iface=""
-        ifconfig 2>/dev/null | while IFS= read -r _line; do
-            case "$_line" in
-                tun*|tailscale*)
-                    _cur_iface="${_line%%:*}"; _cur_iface="${_cur_iface%% *}" ;;
-                *"inet "*)
-                    if [ -n "$_cur_iface" ]; then
-                        _ip="${_line#*inet }"; _ip="${_ip%% *}"; _ip="${_ip%%/*}"
-                        printf '%s %s\n' "$_cur_iface" "$_ip" > "$BASE/state/vpn_detected.tmp"
-                        _cur_iface=""
-                    fi ;;
-                *) _cur_iface="" ;;
-            esac
-        done
-    fi
-    if [ -f "$BASE/state/vpn_detected.tmp" ]; then
-        read -r _vpn_iface _vpn_ip < "$BASE/state/vpn_detected.tmp"
-        rm -f "$BASE/state/vpn_detected.tmp"
-    fi
-    if [ -z "$_vpn_ip" ]; then
-        log ERROR "no VPN interface found (tun*/tailscale*) -- is VPN active?"
-        exit 1
-    fi
-    # derive /24 subnet from VPN IP
-    _vpn_subnet="$(printf '%s\n' "$_vpn_ip" | awk -F. '{printf "%s.%s.%s.0/24",$1,$2,$3}')"
-    MY_IP="$_vpn_ip"
-    PRIMARY_IFACE="$_vpn_iface"
-    SUBNET="$_vpn_subnet"
-    GW_IP="$_vpn_ip"
-    log INFO "vpn mode: iface=$_vpn_iface ip=$_vpn_ip subnet=$_vpn_subnet"
-else
-    detect_iface
-    detect_network
-fi
+detect_iface
+detect_network
 
 discover_hosts        # Phase 0: validate registered + Phase 1/2: find new
 
