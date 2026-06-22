@@ -70,6 +70,31 @@ _sha256() {
     fi
 }
 
+# _local_ips -- every IPv4 address bound to this device (one per line).
+# Used to guarantee distribution never targets the local machine, regardless
+# of whether MY_IP is exported (e.g. when ndevs runs outside a noemap scan).
+_local_ips() {
+    # ifconfig with NO arguments is the only enumeration that works on Termux/
+    # Android without root (ip -4 addr show / /proc/net/dev are permission-denied).
+    # IPs are read live every call so a dynamic, router-assigned address is
+    # always current -- we never pin an IP.
+    if command -v ifconfig >/dev/null 2>&1; then
+        ifconfig 2>/dev/null | awk '/inet /{for(i=1;i<=NF;i++) if($i=="inet"){v=$(i+1); sub(/^addr:/,"",v); print v}}'
+    elif command -v ip >/dev/null 2>&1; then
+        ip -4 addr show 2>/dev/null | awk '/inet /{split($2,a,"/");print a[1]}'
+    fi
+    printf '127.0.0.1\n'
+}
+
+# is_local_ip IP -- return 0 if IP belongs to this device (or is loopback).
+is_local_ip() {
+    _q="$1"
+    [ -n "$_q" ] || return 1
+    case "$_q" in 127.*|localhost) return 0 ;; esac
+    [ -n "${MY_IP:-}" ] && [ "$_q" = "$MY_IP" ] && return 0
+    _local_ips | grep -qxF "$_q"
+}
+
 # node_id -- the canonical 16-hex identifier for this device.
 node_id() {
     _machine_seed | _sha256 | cut -c1-16

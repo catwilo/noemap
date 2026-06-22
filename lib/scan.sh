@@ -239,6 +239,7 @@ sync_devices_to_nodes() {
     while IFS='|' read -r _sa _sip; do
         [ -n "$_sa" ] || continue
         [ "$_sip" = "${MY_IP:-}" ] && continue   # never push to self
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_sip"; then continue; fi
         if nssh "$_sa" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_db" < "$DEVICES_DB" >/dev/null 2>&1; then
             log OK "synced devices.db -> $_sa"
         else

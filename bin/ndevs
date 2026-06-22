@@ -381,7 +381,7 @@ _distribute_registry() {
     while IFS='|' read -r _na _nip; do
         [ -n "$_na" ] || continue
         [ "$_na" = "$_my_alias" ] && continue
-        [ -n "$_my_ip" ] && [ "$_nip" = "$_my_ip" ] && continue
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_nip"; then continue; fi
         case "$_nip" in 127.*|localhost) continue ;; esac
         if nssh "$_na" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_reg" < "$REGISTRY_DB" >/dev/null 2>&1; then
             log OK "registry -> $_na"
