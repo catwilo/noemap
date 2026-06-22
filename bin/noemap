@@ -314,28 +314,32 @@ if [ "${NOEMAP_VPN:-0}" = "1" ]; then
     _vpn_ip=""
     _vpn_iface=""
     # detect VPN interface: tun* or tailscale* -- ifconfig no-args (Termux safe)
-    _ifc_out="$(ifconfig 2>/dev/null || ip -br addr 2>/dev/null || true)"
-    # parse ifconfig output: find tun or tailscale iface with an inet addr
-    _cur_iface=""
-    printf '%s\n' "$_ifc_out" | while IFS= read -r _line; do
-        case "$_line" in
-            tun*|tailscale*)
-                _cur_iface="${_line%%:*}"; _cur_iface="${_cur_iface%% *}" ;;
-            *"inet "*)
-                if [ -n "$_cur_iface" ]; then
-                    _ip="${_line#*inet }"
-                    _ip="${_ip%% *}"
-                    _ip="${_ip%%/*}"
-                    case "$_ip" in
-                        100.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
-                            printf '%s %s\n' "$_cur_iface" "$_ip" > "$BASE/state/vpn_detected.tmp"
-                            ;;
-                    esac
-                    _cur_iface=""
-                fi ;;
-            *) _cur_iface="" ;;
-        esac
-    done
+    # detect VPN iface: supports both ifconfig (multiline) and ip -br addr (single-line)
+    # ip -br addr format: "tailscale0  UNKNOWN  100.x.x.x/32 ..."
+    # ifconfig format:    "tun0: flags=...\n  inet 100.x.x.x ..."
+    if ip -br addr show 2>/dev/null | grep -qE "^(tun|tailscale)"; then
+        ip -br addr show 2>/dev/null | while IFS= read -r _line; do
+            _iface="${_line%% *}"
+            case "$_iface" in tun*|tailscale*) ;; *) continue ;; esac
+            _ip="$(printf '%s\n' "$_line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+            [ -n "$_ip" ] && printf '%s %s\n' "$_iface" "$_ip" > "$BASE/state/vpn_detected.tmp" && break
+        done
+    elif ifconfig 2>/dev/null | grep -qE "^(tun|tailscale)"; then
+        _cur_iface=""
+        ifconfig 2>/dev/null | while IFS= read -r _line; do
+            case "$_line" in
+                tun*|tailscale*)
+                    _cur_iface="${_line%%:*}"; _cur_iface="${_cur_iface%% *}" ;;
+                *"inet "*)
+                    if [ -n "$_cur_iface" ]; then
+                        _ip="${_line#*inet }"; _ip="${_ip%% *}"; _ip="${_ip%%/*}"
+                        printf '%s %s\n' "$_cur_iface" "$_ip" > "$BASE/state/vpn_detected.tmp"
+                        _cur_iface=""
+                    fi ;;
+                *) _cur_iface="" ;;
+            esac
+        done
+    fi
     if [ -f "$BASE/state/vpn_detected.tmp" ]; then
         read -r _vpn_iface _vpn_ip < "$BASE/state/vpn_detected.tmp"
         rm -f "$BASE/state/vpn_detected.tmp"
