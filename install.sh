@@ -119,12 +119,16 @@ has ncat || {
         _ncat_cmd="sudo apt-get install -y ncat"
     fi
     if [ -n "$_ncat_cmd" ]; then
-        printf 'install ncat now? [y/N] '
-        read -r _ncat_ans
-        case "$_ncat_ans" in
-            y|Y) eval "$_ncat_cmd" && log OK "ncat installed" || log WARN "ncat install failed -- run manually: $_ncat_cmd" ;;
-            *) log INFO "skipping ncat install" ;;
-        esac
+        if [ -t 0 ]; then
+            printf 'install ncat now? [y/N] '
+            read -r _ncat_ans
+            case "$_ncat_ans" in
+                y|Y) eval "$_ncat_cmd" && log OK "ncat installed" || log WARN "ncat install failed -- run manually: $_ncat_cmd" ;;
+                *) log INFO "skipping ncat install" ;;
+            esac
+        else
+            log INFO "non-interactive  skipping ncat install, run manually: $_ncat_cmd"
+        fi
     fi
 }
 
