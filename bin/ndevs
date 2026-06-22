@@ -46,6 +46,13 @@ fi
 # shellcheck source=/dev/null
 . "$_util"
 
+# identity helpers (node_id, node_alias, master registry)
+_ident="$LIB/identity.sh"
+if [ -f "$_ident" ]; then
+    # shellcheck source=/dev/null
+    . "$_ident"
+fi
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -360,6 +367,85 @@ _cmd_push_vpn() {
     done
 }
 
+# _distribute_registry -- push registry.db to every known node via nssh,
+# skipping self. Called after every registry change so identity is never stale.
+_distribute_registry() {
+    [ -f "$REGISTRY_DB" ] || return 0
+    has_cmd nssh || { log WARN "nssh not found -- registry not distributed"; return 0; }
+    _remote_reg="$HOME/.local/share/noemap/state/registry.db"
+    [ -f "$DB" ] || return 0
+    # Skip self by local IP (MY_IP if exported, else any 127.* / own row).
+    _my_ip="${MY_IP:-}"
+    _my_alias="$(node_alias 2>/dev/null || printf '')"
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
+    while IFS='|' read -r _na _nip; do
+        [ -n "$_na" ] || continue
+        [ "$_na" = "$_my_alias" ] && continue
+        [ -n "$_my_ip" ] && [ "$_nip" = "$_my_ip" ] && continue
+        case "$_nip" in 127.*|localhost) continue ;; esac
+        if nssh "$_na" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_reg" < "$REGISTRY_DB" >/dev/null 2>&1; then
+            log OK "registry -> $_na"
+        else
+            log WARN "registry to $_na failed (node down?) -- skipped"
+        fi
+    done
+}
+
+# _cmd_node_set -- set THIS device's canonical identity in the master registry.
+# usage: ndevs --node-set <alias> [user] [port]
+_cmd_node_set() {
+    [ $# -ge 1 ] || { printf 'usage: ndevs --node-set <alias> [user] [port]\n' >&2; exit 1; }
+    _alias="$1"
+    # Default user is 'u' (Android user name is irrelevant). If not passed and
+    # stdin is a tty, prompt with 'u' as the suggested default (Enter accepts).
+    if [ -n "${2:-}" ]; then
+        _user="$2"
+    elif [ -t 0 ]; then
+        printf '  user [u]: ' >&2
+        read -r _user </dev/tty || _user=""
+        [ -n "$_user" ] || _user="u"
+    else
+        _user="u"
+    fi
+    _port="${3:-8022}"
+    _nid="$(node_id)"
+    [ -n "$_nid" ] || { log ERROR "could not compute node id"; exit 1; }
+    mkdir -p "$(dirname "$REGISTRY_DB")"
+    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
+    _tmp="$(mktemp "${TMPDIR:-/tmp}/reg.XXXXXX")"
+    awk -F'|' -v id="$_nid" '/^[[:space:]]*$/{next}/^#/{next}$1!=id{print}' "$REGISTRY_DB" > "$_tmp"
+    printf '%s|%s|%s|%s\n' "$_nid" "$_alias" "$_user" "$_port" >> "$_tmp"
+    mv -f "$_tmp" "$REGISTRY_DB"
+    log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
+    _distribute_registry
+}
+
+# _cmd_node_add -- register ANOTHER machine's identity by explicit node-id.
+# usage: ndevs --node-add <node-id> <alias> <user> <port>
+_cmd_node_add() {
+    [ $# -ge 4 ] || { printf 'usage: ndevs --node-add <node-id> <alias> <user> <port>\n' >&2; exit 1; }
+    _nid="$1"; _alias="$2"; _user="$3"; _port="$4"
+    mkdir -p "$(dirname "$REGISTRY_DB")"
+    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
+    if grep -q "^${_nid}|" "$REGISTRY_DB" 2>/dev/null; then
+        log ERROR "node-id '$_nid' already registered -- use --node-set semantics or edit"; exit 1
+    fi
+    printf '%s|%s|%s|%s\n' "$_nid" "$_alias" "$_user" "$_port" >> "$REGISTRY_DB"
+    log OK "node added: $_alias ($_nid) user=$_user port=$_port"
+    _distribute_registry
+}
+
+# _cmd_nodes -- list the master registry, marking which row is THIS device.
+_cmd_nodes() {
+    [ -f "$REGISTRY_DB" ] && [ -s "$REGISTRY_DB" ] || { log INFO "no nodes registered (use --node-set)"; return 0; }
+    _me="$(node_id 2>/dev/null || printf '')"
+    printf '  NODE-ID           ALIAS      USER       PORT  SELF\n'
+    awk -F'|' -v me="$_me" '
+        /^[[:space:]]*$/{next}/^#/{next}NF>=4{
+            printf "  %-16s  %-9s  %-9s  %-4s  %s\n",$1,$2,$3,$4,($1==me?"<-- this":"")
+        }' "$REGISTRY_DB"
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -373,6 +459,9 @@ case "${1:-}" in
     --update-ip)          shift; _cmd_update_ip "$@" ;;
     --rollback)           shift; _cmd_rollback "$@" ;;
     --push-vpn)           shift; _cmd_push_vpn "$@" ;;
+    --node-set)           shift; _cmd_node_set "$@" ;;
+    --node-add)           shift; _cmd_node_add "$@" ;;
+    --nodes)              _cmd_nodes ;;
     --resetall)           _cmd_resetall ;;
     -h|--help)
         printf 'usage: ndevs\n'
@@ -383,6 +472,9 @@ case "${1:-}" in
         printf '       ndevs --add <alias> <ip> <user> [port]\n'
         printf '       ndevs --rollback <alias>\n'
         printf '       ndevs --push-vpn <alias>\n'
+        printf '       ndevs --node-set <alias> [user] [port]\n'
+        printf '       ndevs --node-add <node-id> <alias> <user> <port>\n'
+        printf '       ndevs --nodes\n'
         printf '       ndevs --resetall\n'
         ;;
     *)

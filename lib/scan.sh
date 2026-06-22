@@ -184,19 +184,40 @@ _self_register() {
     [ -n "${MY_IP:-}" ] || return 0
     [ -f "$DEVICES_DB" ] || : > "$DEVICES_DB"
 
-    # already registered by IP? then nothing to do
-    if awk -F'|' -v ip="$MY_IP" '
-        /^[[:space:]]*$/{next}/^#/{next}$2==ip{found=1;exit}END{exit !found}
-    ' "$DEVICES_DB" 2>/dev/null; then
+    # Resolve canonical identity from the master registry (node-id -> alias).
+    # This is stable across IP/network/user changes, unlike hostname.
+    _self_alias=""
+    _self_user=""
+    _self_port=""
+    if command -v node_registry_row >/dev/null 2>&1; then
+        _self_row="$(node_registry_row 2>/dev/null)"
+        if [ -n "$_self_row" ]; then
+            _self_alias="$(printf '%s\n' "$_self_row" | cut -d'|' -f2)"
+            _self_user="$(printf '%s\n'  "$_self_row" | cut -d'|' -f3)"
+            _self_port="$(printf '%s\n'  "$_self_row" | cut -d'|' -f4)"
+        fi
+    fi
+
+    if [ -z "$_self_alias" ]; then
+        log WARN "this node has no canonical identity -- run: ndevs --node-set <alias>"
         return 0
     fi
 
-    _self_alias="$(hostname 2>/dev/null | cut -d. -f1)"
-    [ -n "$_self_alias" ] || _self_alias="self"
-    _self_user="$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')"
-    _self_port=8022
+    _self_user="${_self_user:-$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')}"
+    _self_port="${_self_port:-8022}"
 
-    printf '%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" >> "$DEVICES_DB"
+    # Update existing self row (by alias) in place, else append. Keeps the
+    # canonical alias bound to the current MY_IP every run.
+    # Dedup by MY_IP (the node's real LAN identity): drop any existing row with
+    # this IP (e.g. stale 'localhost') AND any row with the canonical alias,
+    # then append the single correct row.
+    _sr_tmp="$(mktemp "${TMPDIR:-/tmp}/selfreg.XXXXXX")"
+    awk -F'|' -v a="$_self_alias" -v ip="$MY_IP" '
+        /^[[:space:]]*$/{print;next}/^#/{print;next}
+        $1==a{next} $2==ip{next} {print}
+    ' "$DEVICES_DB" > "$_sr_tmp" 2>/dev/null || cp "$DEVICES_DB" "$_sr_tmp"
+    printf '%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" >> "$_sr_tmp"
+    mv -f "$_sr_tmp" "$DEVICES_DB"
     log OK "self-registered $_self_alias ($MY_IP) in devices.db"
 }
 

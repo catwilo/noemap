@@ -273,7 +273,7 @@ export NOEMAP_IFACE
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
-for _mod in util.sh lock.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh; do
+for _mod in util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh; do
     _path="$LIB/$_mod"
     if [ ! -f "$_path" ]; then
         printf '[ERROR] missing module: %s\n' "$_mod" >&2
