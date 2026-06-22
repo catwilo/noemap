@@ -236,16 +236,16 @@ sync_devices_to_nodes() {
 
     _remote_db="$HOME/.local/share/noemap/state/devices.db"
     awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DEVICES_DB" | \
-    while IFS='|' read -r _sa _sip; do
+    while IFS='|' read -r _sa _sip <&3; do
         [ -n "$_sa" ] || continue
         [ "$_sip" = "${MY_IP:-}" ] && continue   # never push to self
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_sip"; then continue; fi
-        if nssh "$_sa" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_db" < "$DEVICES_DB" >/dev/null 2>&1; then
+        if nssh "$_sa" "mkdir -p ~/.local/share/noemap/state && cat > ~/.local/share/noemap/state/devices.db" < "$DEVICES_DB"; then
             log OK "synced devices.db -> $_sa"
         else
             log WARN "sync to $_sa failed (node down?) -- skipped"
         fi
-    done
+    done 3<&0
 }
 
 # ---------------------------------------------------------------------------
