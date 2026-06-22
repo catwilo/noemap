@@ -109,7 +109,24 @@ if ! has ip && ! has ifconfig; then _missing="$_missing ip/ifconfig"; fi
 has nmap  || log WARN "nmap not found  discovery will use nc fallback"
 has scp   || log WARN "scp not found  nscp unavailable"
 has rsync || log WARN "rsync not found  nrsync unavailable"
-has ncat  || log WARN "ncat not found  nclip TCP listener unavailable"
+has ncat || {
+    log WARN "ncat not found  nclip TCP listener unavailable"
+
+    _ncat_cmd=""
+    if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/bin" ]; then
+        _ncat_cmd="pkg install -y ncat"
+    elif has apt-get; then
+        _ncat_cmd="sudo apt-get install -y ncat"
+    fi
+    if [ -n "$_ncat_cmd" ]; then
+        printf 'install ncat now? [y/N] '
+        read -r _ncat_ans
+        case "$_ncat_ans" in
+            y|Y) eval "$_ncat_cmd" && log OK "ncat installed" || log WARN "ncat install failed -- run manually: $_ncat_cmd" ;;
+            *) log INFO "skipping ncat install" ;;
+        esac
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Patch shell rc: export NOEMAP_DATA + aliases (PATH already covers BINDIR)
