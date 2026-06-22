@@ -53,10 +53,17 @@ done
 
 case "${1:-}" in
     -h|--help)
-        printf 'usage: nssh <alias> [command...]\n'
+        printf 'usage: nssh [-t|--pty] <alias> [command...]\n'
         printf '  SSH to a device registered in devices.db; forwards any command.\n'
+        printf '  -t, --pty   force pseudo-terminal allocation (for remote sudo, etc.)\n'
         exit 0
         ;;
+esac
+
+# Optional PTY flag before the alias: nssh -t <alias> <cmd>
+_pty=""
+case "${1:-}" in
+    -t|--pty) _pty="-t"; shift ;;
 esac
 
 
@@ -92,8 +99,8 @@ if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
 fi
 
 if [ -f "$CFG" ]; then
-    exec ssh -F "$CFG" -p "$_port" "${_user}@${_ip}" "$@"
+    exec ssh -F "$CFG" $_pty -p "$_port" "${_user}@${_ip}" "$@"
 else
     log WARN "ssh_config not found at $CFG — connecting without it"
-    exec ssh -p "$_port" "${_user}@${_ip}" "$@"
+    exec ssh $_pty -p "$_port" "${_user}@${_ip}" "$@"
 fi
