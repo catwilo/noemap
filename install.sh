@@ -46,14 +46,16 @@ chmod 700 "$DATADIR"
 # Previous installs symlinked $BINDIR/<tool> -> <repo>/bin/<tool>; those
 # break the "repo is deletable" guarantee, so replace them with real copies.
 # ---------------------------------------------------------------------------
-for _b in "$SCRIPT_DIR"/bin/*; do
-    [ -f "$_b" ] || continue
-    _name="$(basename "$_b")"
-    _link="$BINDIR/$_name"
-    if [ -L "$_link" ]; then
-        log INFO "removing stale symlink: $_link"
-        rm -f "$_link"
-    fi
+for _l in "$BINDIR"/*; do
+    [ -L "$_l" ] || continue
+    [ -e "$_l" ] && continue
+    _target="$(readlink -f "$_l" 2>/dev/null || true)"
+    case "$_target" in
+        "$SCRIPT_DIR"/*)
+            log INFO "removing broken symlink: $_l -> $_target"
+            rm -f "$_l"
+            ;;
+    esac
 done
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ log INFO "libs installed"
 for _b in "$SCRIPT_DIR"/bin/*; do
     [ -f "$_b" ] || continue
     _name="$(basename "$_b")"
+    case "$_name" in *.bak) continue ;; esac
     cp "$_b" "$BINDIR/$_name"
     chmod +x "$BINDIR/$_name"
 done
