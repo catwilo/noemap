@@ -175,6 +175,58 @@ _remove_offline_host() {
 }
 
 # ---------------------------------------------------------------------------
+# _self_register — #17: ensure this node's own IP is in devices.db so peers
+# that receive the distributed db know how to reach back. Uses hostname as
+# alias and the current user; port 8022 (Termux/Android sshd default). No-op
+# if MY_IP is already present. Safe to call repeatedly (idempotent).
+# ---------------------------------------------------------------------------
+_self_register() {
+    [ -n "${MY_IP:-}" ] || return 0
+    [ -f "$DEVICES_DB" ] || : > "$DEVICES_DB"
+
+    # already registered by IP? then nothing to do
+    if awk -F'|' -v ip="$MY_IP" '
+        /^[[:space:]]*$/{next}/^#/{next}$2==ip{found=1;exit}END{exit !found}
+    ' "$DEVICES_DB" 2>/dev/null; then
+        return 0
+    fi
+
+    _self_alias="$(hostname 2>/dev/null | cut -d. -f1)"
+    [ -n "$_self_alias" ] || _self_alias="self"
+    _self_user="$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')"
+    _self_port=8022
+
+    printf '%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" >> "$DEVICES_DB"
+    log OK "self-registered $_self_alias ($MY_IP) in devices.db"
+}
+
+# ---------------------------------------------------------------------------
+# sync_devices_to_nodes — #16: after a successful scan, push the full
+# devices.db to every registered node (skipping self) so all nodes share one
+# source of truth without running noemap locally. Best-effort: a node that is
+# down is warned, never fatal. Calls _self_register first (#17) so the
+# distributed db always includes this node.
+# ---------------------------------------------------------------------------
+sync_devices_to_nodes() {
+    _self_register
+
+    [ -f "$DEVICES_DB" ] && [ -s "$DEVICES_DB" ] || return 0
+    has_cmd nssh || { log WARN "nssh not found -- skipping device sync"; return 0; }
+
+    _remote_db="$HOME/.local/share/noemap/state/devices.db"
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DEVICES_DB" | \
+    while IFS='|' read -r _sa _sip; do
+        [ -n "$_sa" ] || continue
+        [ "$_sip" = "${MY_IP:-}" ] && continue   # never push to self
+        if nssh "$_sa" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_db" < "$DEVICES_DB" >/dev/null 2>&1; then
+            log OK "synced devices.db -> $_sa"
+        else
+            log WARN "sync to $_sa failed (node down?) -- skipped"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
 # discover_hosts — main entry point. Sets HOST_LIST.
 # ---------------------------------------------------------------------------
 discover_hosts() {

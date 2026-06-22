@@ -316,6 +316,7 @@ discover_hosts        # Phase 0: validate registered + Phase 1/2: find new
     log WARN "no hosts found -- nothing to fingerprint"
     render_output
     render_registered_devices
+    sync_devices_to_nodes
     exit 0
 }
 
@@ -327,5 +328,6 @@ prompt_new_hosts
 render_connect
 render_active_hosts
 render_registered_devices
+sync_devices_to_nodes
 
 log OK "noemap completed"
