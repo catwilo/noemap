@@ -72,30 +72,6 @@ _list_iface_candidates() {
     | grep -Ev "$_IFACE_SKIP_PATTERN"
 }
 
-# _iface_from_default_route — interface name backing the default route.
-# This is the source of truth for "my real network" on multi-homed hosts.
-_iface_from_default_route() {
-    ip route show default 2>/dev/null \
-    | awk '/^default/ { for (i=1;i<=NF;i++) if ($i=="dev") { print $(i+1); exit } }' \
-    | head -1
-}
-
-# _iface_addr_prefix IFACE — prints "IFACE|IP|PREFIX" for one interface, or empty.
-_iface_addr_prefix() {
-    ip -4 addr show dev "$1" 2>/dev/null \
-    | awk -v ifc="$1" '/inet / { split($2,b,"/"); print ifc "|" b[1] "|" b[2]; exit }'
-}
-
-# _list_iface_candidates — every usable iface as "IFACE|IP|PREFIX", skip-filtered.
-_list_iface_candidates() {
-    ip -4 addr show 2>/dev/null \
-    | awk '
-        /^[0-9]+: / { split($2,a,"@"); iface=a[1]; sub(/:$/,"",iface) }
-        /inet / && iface != "" { split($2,b,"/"); print iface "|" b[1] "|" b[2] }
-    ' \
-    | grep -Ev "$_IFACE_SKIP_PATTERN"
-}
-
 # _network_addr ip prefix — computes the network address.
 # Uses awk integer arithmetic to avoid signed 32-bit overflow in dash/busybox.
 _network_addr() {
