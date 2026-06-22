@@ -8,7 +8,6 @@
 #   load_cache  — called before detection; populates vars if cache is fresh
 #   save_cache  — called after successful detection; persists current state
 
-CACHE="$BASE/state/cache.env"
 
 # Maximum cache age in seconds before treated as stale (6 hours)
 _CACHE_MAX_AGE=21600
@@ -31,6 +30,7 @@ _cache_set() {
 # load_cache — sources the cache file if it exists and is recent enough.
 # Uses LAST_SCAN stored in the cache itself (POSIX-portable, no stat -c).
 load_cache() {
+    CACHE="${BASE}/state/cache.env"
     [ -f "$CACHE" ] || return 0
 
     # Read LAST_SCAN first for staleness check
@@ -82,6 +82,7 @@ load_cache() {
 # save_cache — atomically writes current state to the cache file.
 # Refuses to write if critical variables are empty.
 save_cache() {
+    CACHE="${BASE}/state/cache.env"
     if [ -z "${MY_IP:-}" ] || [ -z "${SUBNET:-}" ]; then
         log WARN "save_cache: MY_IP or SUBNET is empty — cache not updated"
         return 0
