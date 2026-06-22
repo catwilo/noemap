@@ -42,6 +42,7 @@ else
     DATA="$_repo_base"
 fi
 LIB="$DATA/lib"
+BASE="$DATA"
 
 # ---------------------------------------------------------------------------
 # Help — covers every tool in the suite
