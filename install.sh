@@ -190,6 +190,85 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# SSH key bootstrap (noemap#15)
+#   1. Generate ~/.ssh/id_ed25519 (no passphrase) if missing -- required for
+#      non-interactive nssh between nodes. No passphrase by design: these keys
+#      are used by automation, an agent prompt would break the unattended flow.
+#   2. Distribute our public key to every node reachable WITHOUT a password
+#      (reuse the already-trusted SSH channel). Idempotent append to the
+#      remote authorized_keys -- never duplicates.
+#   3. For nodes not yet reachable passwordless, print the exact ssh-copy-id
+#      command to run once (first-time bootstrap of a new node).
+#   4. Verify the handshake to each node and report OK / needs-setup.
+# ---------------------------------------------------------------------------
+ssh_key_bootstrap() {
+    _key="$HOME/.ssh/id_ed25519"
+    _pub="$_key.pub"
+
+    mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+    if [ ! -f "$_key" ]; then
+        if has ssh-keygen; then
+            ssh-keygen -t ed25519 -N "" -f "$_key" -C "noemap@$(hostname 2>/dev/null || echo node)" >/dev/null 2>&1 \
+                && log OK "generated ssh key: $_key" \
+                || { log WARN "ssh-keygen failed -- skipping key bootstrap"; return 0; }
+        else
+            log WARN "ssh-keygen not found -- skipping key bootstrap"; return 0
+        fi
+    else
+        log INFO "ssh key already present: $_key"
+    fi
+    chmod 600 "$_key" 2>/dev/null || true
+    [ -f "$_pub" ] || { log WARN "no public key at $_pub -- skipping distribution"; return 0; }
+
+    _devdb="$STATEDIR/devices.db"
+    [ -f "$_devdb" ] && [ -s "$_devdb" ] || { log INFO "no nodes registered -- key distribution skipped"; return 0; }
+    has "$BINDIR/nssh" || command -v nssh >/dev/null 2>&1 || { log INFO "nssh unavailable -- key distribution skipped"; return 0; }
+
+    # Load is_local_ip so we never try to SSH into ourselves (local IPs are
+    # dynamic/router-assigned; enumerated live via ifconfig in identity.sh).
+    if [ -f "$LIBDIR/identity.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$LIBDIR/identity.sh"
+    fi
+
+    _pubdata="$(cat "$_pub")"
+    _need_manual=""
+    # iterate registered aliases (skip self handled by nssh/devices content)
+    while IFS='|' read -r _ka _kip _rest; do
+        case "$_ka" in ""|\#*) continue ;; esac
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
+        # reachable passwordless? (BatchMode: never prompts)
+        if nssh "$_ka" "true" >/dev/null 2>&1; then
+            # idempotent append: only add if not already present
+            nssh "$_ka" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && grep -qxF '$_pubdata' ~/.ssh/authorized_keys || printf '%s\n' '$_pubdata' >> ~/.ssh/authorized_keys" >/dev/null 2>&1 \
+                && log OK "key ensured on $_ka" \
+                || log WARN "key append to $_ka failed"
+        else
+            _need_manual="$_need_manual $_ka"
+        fi
+    done < "$_devdb"
+
+    if [ -n "$_need_manual" ]; then
+        log WARN "nodes needing first-time key setup:$_need_manual"
+        for _m in $_need_manual; do
+            printf '    run once:  ssh-copy-id -i %s %s\n' "$_pub" "$_m"
+        done
+    fi
+
+    # final handshake verification
+    while IFS='|' read -r _ka _kip _rest; do
+        case "$_ka" in ""|\#*) continue ;; esac
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
+        if nssh "$_ka" "true" >/dev/null 2>&1; then
+            log OK "handshake $_ka: OK"
+        else
+            log WARN "handshake $_ka: needs setup"
+        fi
+    done < "$_devdb"
+}
+ssh_key_bootstrap
+
+# ---------------------------------------------------------------------------
 # Post-install verification: prove an installed tool resolves its libs.
 # ---------------------------------------------------------------------------
 if NOEMAP_DATA="$DATADIR" "$BINDIR/ndevs" >/dev/null 2>&1; then

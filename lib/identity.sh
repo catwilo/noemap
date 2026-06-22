@@ -87,11 +87,26 @@ _local_ips() {
 }
 
 # is_local_ip IP -- return 0 if IP belongs to this device (or is loopback).
+# _own_devices_ip -- the IP bound to THIS node's canonical alias in devices.db.
+# This is "me" by definition even if the interface that had it is now down
+# (IPs are dynamic/router-assigned), so it complements live ifconfig lookup.
+_own_devices_ip() {
+    _oda="$(node_alias 2>/dev/null)"
+    [ -n "$_oda" ] || return 0
+    _odb="$(_identity_statedir)/devices.db"
+    [ -f "$_odb" ] || return 0
+    awk -F'|' -v a="$_oda" '
+        /^[[:space:]]*$/{next}/^#/{next}$1==a{print $2;exit}
+    ' "$_odb" 2>/dev/null
+}
+
 is_local_ip() {
     _q="$1"
     [ -n "$_q" ] || return 1
     case "$_q" in 127.*|localhost) return 0 ;; esac
     [ -n "${MY_IP:-}" ] && [ "$_q" = "$MY_IP" ] && return 0
+    # the IP of our own canonical row is always us (survives interface down)
+    [ "$_q" = "$(_own_devices_ip)" ] && return 0
     _local_ips | grep -qxF "$_q"
 }
 
