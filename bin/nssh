@@ -63,7 +63,7 @@ esac
 # Optional PTY flag before the alias: nssh -t <alias> <cmd>
 _pty=""
 case "${1:-}" in
-    -t|--pty) _pty="-t"; shift ;;
+    -t|--pty) _pty="-tt"; shift ;;   # -tt forces PTY even when stdin is not a terminal
 esac
 
 
