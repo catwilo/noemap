@@ -98,9 +98,30 @@ if [ -t 0 ] && command -v nclip-listen >/dev/null 2>&1; then
     trap 'nclip-listen stop >/dev/null 2>&1 || true' EXIT INT TERM
 fi
 
-if [ -f "$CFG" ]; then
-    exec ssh -F "$CFG" $_pty -p "$_port" "${_user}@${_ip}" "$@"
-else
-    log WARN "ssh_config not found at $CFG — connecting without it"
-    exec ssh $_pty -p "$_port" "${_user}@${_ip}" "$@"
+_ssh_connect() {
+    if [ -f "$CFG" ]; then
+        ssh -F "$CFG" $_pty -p "$_port" "${_user}@${_ip}" "$@"
+    else
+        log WARN "ssh_config not found at $CFG - connecting without it"
+        ssh $_pty -p "$_port" "${_user}@${_ip}" "$@"
+    fi
+}
+
+# ControlPath from ssh_config is ~/.ssh/noemap-%r@%h:%p
+_socket="$HOME/.ssh/noemap-${_user}@${_ip}:${_port}"
+
+_ssh_connect "$@"
+_rc=$?
+
+# A stale ControlMaster socket makes ssh fail before auth. If the socket
+# exists and the first attempt failed, drop it and retry exactly once.
+# A genuine auth failure with no socket present never triggers a retry.
+if [ "$_rc" -ne 0 ] && [ -S "$_socket" ]; then
+    log INFO "stale control socket detected - clearing and retrying once"
+    ssh -O exit -p "$_port" "${_user}@${_ip}" >/dev/null 2>&1 || true
+    rm -f "$_socket"
+    _ssh_connect "$@"
+    _rc=$?
 fi
+
+exit $_rc
