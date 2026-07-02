@@ -1,5 +1,0 @@
-# noemap devices database
-# Format: ALIAS|IP|USER|PORT
-# Example:
-#   deb|192.168.x.x|alice|22
-#   raspi|192.168.x.x|pi|22

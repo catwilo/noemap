@@ -89,9 +89,9 @@ else
     log INFO "ssh_config left intact"
 fi
 
-if [ ! -f "$STATEDIR/devices.db" ] && [ -f "$SCRIPT_DIR/state/devices.db" ]; then
-    cp "$SCRIPT_DIR/state/devices.db" "$STATEDIR/devices.db"
-    log INFO "devices.db initialised"
+if [ ! -f "$STATEDIR/devices.db" ]; then
+    : > "$STATEDIR/devices.db"
+    log INFO "devices.db initialised (empty)"
 else
     log INFO "devices.db left intact"
 fi
