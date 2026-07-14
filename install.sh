@@ -109,7 +109,29 @@ for _cmd in awk sed grep cut ping ssh; do
 done
 if ! has ip && ! has ifconfig; then _missing="$_missing ip/ifconfig"; fi
 [ -z "$_missing" ] || log WARN "MISSING hard deps:$_missing  noemap will not work"
-has nmap  || log WARN "nmap not found  discovery will use nc fallback"
+has nmap || {
+    log WARN "nmap not found  attempting to install..."
+    
+    _nmap_cmd=""
+    if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/bin" ]; then
+        _nmap_cmd="pkg install -y nmap"
+    elif has apt-get; then
+        _nmap_cmd="sudo apt-get install -y nmap"
+    fi
+    
+    if [ -n "$_nmap_cmd" ]; then
+        if eval "$_nmap_cmd" 2>/dev/null; then
+            log OK "nmap installed"
+        else
+            fail "nmap install failed -- noemap requires nmap. Run manually: $_nmap_cmd"
+        fi
+    else
+        fail "nmap not found and no package manager detected. Install nmap manually and re-run."
+    fi
+    
+    # Verify nmap is now available
+    has nmap || fail "nmap still not found after install attempt"
+}
 has scp   || log WARN "scp not found  nscp unavailable"
 has rsync || log WARN "rsync not found  nrsync unavailable"
 has ncat || {
