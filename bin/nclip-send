@@ -35,19 +35,26 @@ _source_mods util.sh devices.sh
 
 case "${1:-}" in
     -h|--help)
-        printf 'usage: <cmd> | nclip-send <alias>\n'
-        printf '  Send local stdin to a remote device clipboard via SSH + clipso.\n'
+        printf 'usage: <cmd> | nclip-send [--ssh] <alias>\n'
+        printf '  Send local stdin to a remote device clipboard.\n'
+        printf '  Default: TCP/ncat (port %s). --ssh forces SSH transport,\n' "${CLIP_TCP_PORT:-9988}"
+        printf '  no automatic fallback between modes. CLIP_MODE=ssh also works.\n'
         printf '  Alias resolved from devices.db. One explicit destination.\n'
         exit 0
         ;;
 esac
 
-[ $# -eq 1 ] || {
-    printf 'usage: <cmd> | nclip-send <alias>\n' >&2
+[ $# -eq 1 ] || [ $# -eq 2 ] || {
+    printf 'usage: <cmd> | nclip-send [--ssh] <alias>\n' >&2
     exit 1
 }
 
 _alias="$1"
+
+case "$_alias" in
+    --ssh) _mode="ssh"; shift; _alias="$1" ;;
+    *)     _mode="${CLIP_MODE:-tcp}" ;;
+esac
 
 _row="$(resolve_device "$_alias" "$DB")"
 _ip="$(printf '%s\n'   "$_row" | cut -d'|' -f1)"
@@ -94,11 +101,18 @@ _send() {
     fi
 }
 
-if _send_nc 2>/dev/null; then
-    :
-elif _send; then
-    log WARN "nc fast-path unavailable; used SSH fallback (nclip-listen start-tcp on dst?)"
+if [ "$_mode" = "ssh" ]; then
+    if _send; then
+        :
+    else
+        log ERROR "SSH transfer failed; check host, port, key auth, remote clipso"
+        exit 1
+    fi
 else
-    log ERROR "transfer failed: nc and SSH both failed; check host, port, key auth, remote clipso/listener"
-    exit 1
+    if _send_nc 2>/dev/null; then
+        :
+    else
+        log ERROR "TCP transfer failed; check nclip-listen start-tcp on dst, or retry with --ssh"
+        exit 1
+    fi
 fi
