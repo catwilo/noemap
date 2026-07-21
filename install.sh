@@ -9,7 +9,9 @@
 #   libs   : ~/.local/share/noemap/lib   (both platforms)
 #
 # Usage:
-#   sh install.sh
+#   sh install.sh                     -- install/update noemap (idempotent)
+#   sh install.sh client-setup <host> -- emit CLIENT clipboard setup script
+#   sh install.sh -h | --help         -- show this help
 #
 # Idempotent: safe to re-run. state/devices.db and config/ssh_config in
 # the shared data dir are never overwritten (user data preserved).
@@ -21,6 +23,98 @@ fail() { log ERROR "$1"; exit 1; }
 has()  { command -v "$1" >/dev/null 2>&1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+_usage() {
+    cat <<USAGE
+usage: install.sh [command]
+
+commands:
+  (none)              install/update noemap (idempotent, default)
+  client-setup <host> emit a script to configure the SSH CLIENT clipboard
+  -h, --help          show this help
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# client-setup -- emit a script to configure the SSH CLIENT (Mac/Termux) so the
+# server's clipboard socket forwards into the client's native clipboard.
+# ---------------------------------------------------------------------------
+_do_client_setup() {
+    _srv_sock="$HOME/.local/share/noemap/clip.sock"
+    cat <<'CLIENTEOF'
+#!/usr/bin/env bash
+# noemap client clipboard setup -- run ON YOUR Mac or Termux.
+# Auto-detects OS: macOS -> LaunchAgent (pbsync); else -> background listener.
+# Adds a RemoteForward so the server socket pipes into your local clipboard.
+set -eu
+SERVER_HOST="${1:-}"
+[ -n "$SERVER_HOST" ] || { echo "usage: bash this.sh <ssh-host-or-alias>"; exit 1; }
+SSH_CONF="$HOME/.ssh/config"
+mkdir -p "$HOME/.local/bin"
+
+if [ "$(uname)" = "Darwin" ]; then
+  LOCAL_SOCK="$HOME/.clipd.sock"
+  cat > "$HOME/.local/bin/pbsync" <<'PBS'
+#!/bin/bash
+SOCK="$HOME/.clipd.sock"
+rm -f "$SOCK"
+exec nc -lU "$SOCK" | pbcopy
+PBS
+  chmod +x "$HOME/.local/bin/pbsync"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$HOME/Library/LaunchAgents/io.clipd.agent.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.clipd.agent</string>
+  <key>ProgramArguments</key>
+  <array><string>$HOME/.local/bin/pbsync</string></array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+PLIST
+  launchctl unload "$HOME/Library/LaunchAgents/io.clipd.agent.plist" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/io.clipd.agent.plist"
+  echo "macOS: LaunchAgent io.clipd.agent cargado"
+else
+  LOCAL_SOCK="$HOME/.local/share/noemap/clip.sock"
+  if command -v termux-clipboard-set >/dev/null 2>&1; then CLIP_CMD=termux-clipboard-set
+  elif command -v wl-copy >/dev/null 2>&1; then CLIP_CMD=wl-copy
+  elif command -v xclip >/dev/null 2>&1; then CLIP_CMD="xclip -selection clipboard"
+  else echo "no clipboard tool found"; exit 1; fi
+  cat > "$HOME/.local/bin/noemap-clip-listener" <<LISTENER
+#!/usr/bin/env bash
+SOCK="$LOCAL_SOCK"
+rm -f "\$SOCK"
+while true; do nc -lU "\$SOCK" 2>/dev/null | $CLIP_CMD || true; done
+LISTENER
+  chmod +x "$HOME/.local/bin/noemap-clip-listener"
+  echo "Linux/Termux: inicia el listener: ~/.local/bin/noemap-clip-listener &"
+fi
+
+touch "$SSH_CONF"; chmod 600 "$SSH_CONF"
+BEG="# >>> noemap-clip $SERVER_HOST >>>"
+END="# <<< noemap-clip $SERVER_HOST <<<"
+TMP="$(mktemp)"
+awk -v b="$BEG" -v e="$END" '$0==b{s=1} s&&$0==e{s=0;next} !s{print}' "$SSH_CONF" > "$TMP"
+{
+  cat "$TMP"
+  echo "$BEG"
+  echo "Host $SERVER_HOST"
+  echo "    RemoteForward /home/u/.local/share/noemap/clip.sock $LOCAL_SOCK"
+  echo "$END"
+} > "$SSH_CONF"
+rm -f "$TMP"
+echo "Listo. Reconecta SSH para crear el socket en el servidor."
+CLIENTEOF
+}
+
+# ---------------------------------------------------------------------------
+# install -- full idempotent install/update (default command)
+# ---------------------------------------------------------------------------
+_do_install() {
 
 # ---------------------------------------------------------------------------
 # Resolve install destinations
@@ -111,14 +205,14 @@ if ! has ip && ! has ifconfig; then _missing="$_missing ip/ifconfig"; fi
 [ -z "$_missing" ] || log WARN "MISSING hard deps:$_missing  noemap will not work"
 has nmap || {
     log WARN "nmap not found  attempting to install..."
-    
+
     _nmap_cmd=""
     if [ -n "${PREFIX:-}" ] && [ -d "${PREFIX:-}/bin" ]; then
         _nmap_cmd="pkg install -y nmap"
     elif has apt-get; then
         _nmap_cmd="sudo apt-get install -y nmap"
     fi
-    
+
     if [ -n "$_nmap_cmd" ]; then
         if eval "$_nmap_cmd" 2>/dev/null; then
             log OK "nmap installed"
@@ -128,7 +222,7 @@ has nmap || {
     else
         fail "nmap not found and no package manager detected. Install nmap manually and re-run."
     fi
-    
+
     # Verify nmap is now available
     has nmap || fail "nmap still not found after install attempt"
 }
@@ -303,3 +397,27 @@ printf '\n'
 log OK "noemap installed  tools in $BINDIR, libs in $LIBDIR"
 printf '  Repo is now deletable; tools run standalone.\n'
 printf '  Run: noemap   Devices: ndevs\n\n'
+
+}
+
+# ---------------------------------------------------------------------------
+# Top-level dispatch
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    -h|--help)
+        _usage
+        exit 0
+        ;;
+    client-setup)
+        shift
+        _do_client_setup "$@"
+        ;;
+    "")
+        _do_install
+        ;;
+    *)
+        log ERROR "unknown command: $1"
+        _usage
+        exit 1
+        ;;
+esac
