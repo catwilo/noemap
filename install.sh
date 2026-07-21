@@ -167,7 +167,7 @@ log INFO "libs installed"
 for _b in "$SCRIPT_DIR"/bin/*; do
     [ -f "$_b" ] || continue
     _name="$(basename "$_b")"
-    case "$_name" in *.bak|_bootstrap) continue ;; esac
+    case "$_name" in *.bak) continue ;; esac
     cp "$_b" "$BINDIR/$_name"
     chmod +x "$BINDIR/$_name"
 done
