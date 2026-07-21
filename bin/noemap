@@ -32,16 +32,7 @@ else
     done
 fi
 _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
-# Lib/data resolution (standalone-copy model): installer dir, then default, then repo.
-_repo_base="${NOEMAP_BASE:-$(dirname "$_bindir")}"
-if [ -n "${NOEMAP_DATA:-}" ] && [ -d "${NOEMAP_DATA}/lib" ]; then
-    DATA="$NOEMAP_DATA"
-elif [ -d "$HOME/.local/share/noemap/lib" ]; then
-    DATA="$HOME/.local/share/noemap"
-else
-    DATA="$_repo_base"
-fi
-LIB="$DATA/lib"
+. "$_bindir/_bootstrap"
 export BASE="$DATA"
 
 # ---------------------------------------------------------------------------
@@ -273,15 +264,7 @@ export NOEMAP_IFACE
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
-for _mod in util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh; do
-    _path="$LIB/$_mod"
-    if [ ! -f "$_path" ]; then
-        printf '[ERROR] missing module: %s\n' "$_mod" >&2
-        exit 1
-    fi
-    # shellcheck source=/dev/null
-    . "$_path"
-done
+_source_mods util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh
 
 init_session
 
