@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nclip-set  define clipboard direction between two nodes (src sends, dst receives)
 #
 # Usage:  nclip-set <src-alias> <dst-alias>

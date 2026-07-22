@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nclip-send — send local stdin to a remote device's clipboard via SSH + clipso
 #
 # Usage:  <cmd> | nclip-send <alias>

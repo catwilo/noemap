@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nscp — scp wrapper with device alias resolution and directory support
 #
 # Usage:

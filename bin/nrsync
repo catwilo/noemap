@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nrsync — rsync wrapper with device alias resolution
 #
 # Usage:  nrsync <src> <dst>

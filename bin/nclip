@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nclip — copy a remote file to clipboard via SSH cat + clipso
 #
 # Usage:  nclip <alias:/remote/path>

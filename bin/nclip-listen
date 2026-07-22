@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nclip-listen — manage the noemap clipboard forward listener
 #
 # Listens on a local Unix socket and pipes received data into the
@@ -33,9 +33,7 @@ _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
 BASE="$DATA"
 
 SOCK="${CLIP_FORWARD_SOCK:-$HOME/.noemap-clip.sock}"
-PID_FILE="${BASE}/state/nclip-listen.pid"
 TCP_PORT="${CLIP_TCP_PORT:-9988}"
-TCP_PID_FILE="${BASE}/state/nclip-listen-tcp.pid"
 CLIP_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last"
 
 # ── detect local clipboard ────────────────────────────────────────────────────
@@ -53,50 +51,42 @@ fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 _is_running() {
-    [ -f "$PID_FILE" ] || return 1
-    _pid="$(cat "$PID_FILE")"
-    [ -n "$_pid" ] || return 1
-    kill -0 "$_pid" 2>/dev/null
+    tmux has-session -t nclip-listen 2>/dev/null
 }
 
 _do_start() {
     if _is_running; then
-        printf '[INFO]  nclip-listen already running (pid %s)\n' "$(cat "$PID_FILE")" >&2
+        printf '[INFO]  nclip-listen already running (tmux session nclip-listen)\n' >&2
         return 0
     fi
     rm -f "$SOCK"
     mkdir -p "$(dirname "$CLIP_CACHE")"
-    # loop: accept one connection → write to tmp → verify non-empty → copy to clipboard
-    # uses tmp file to avoid pipe buffering issues and guard against empty payloads
-    (
-        while true; do
-            _tmp_clip="${TMPDIR:-/tmp}/nclip-recv.$$"
-            python3 -c '
+    _loop='while true; do
+        _tmp_clip="${TMPDIR:-/tmp}/nclip-recv.$$"
+        python3 -c "
 import socket,sys
 p=sys.argv[1];o=sys.argv[2]
 s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,524288)
 s.bind(p);s.listen(1)
-c,_=s.accept();d=b""
+c,_=s.accept();d=b\"\"
 while True:
     chunk=c.recv(65536)
     if not chunk:break
     d+=chunk
 c.close();s.close()
-open(o,"wb").write(d)
-' "$SOCK" "$_tmp_clip" 2>/dev/null || true
-            if [ -s "$_tmp_clip" ]; then
-                cp "$_tmp_clip" "$CLIP_CACHE"
-                CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
-                setsid "$_clip_cmd" < "$_tmp_clip" 2>/dev/null || "$_clip_cmd" < "$_tmp_clip" || true
-            fi
-            rm -f "$_tmp_clip"
-        done
-    ) &
-    _pid=$!
-    mkdir -p "$(dirname "$PID_FILE")"
-    printf '%s\n' "$_pid" > "$PID_FILE"
-    printf '[OK]    nclip-listen started (pid %s, sock %s)\n' "$_pid" "$SOCK" >&2
+open(o,\"wb\").write(d)
+" "$SOCK" "$_tmp_clip" 2>/dev/null || true
+        if [ -s "$_tmp_clip" ]; then
+            cp "$_tmp_clip" "$CLIP_CACHE"
+            CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
+            setsid "$_clip_cmd" < "$_tmp_clip" 2>/dev/null || "$_clip_cmd" < "$_tmp_clip" || true
+        fi
+        rm -f "$_tmp_clip"
+    done'
+    _inner="export SOCK=$(printf %q "$SOCK") CLIP_CACHE=$(printf %q "$CLIP_CACHE") _clip_cmd=$(printf %q "$_clip_cmd") _bindir=$(printf %q "$_bindir"); ${_loop}"
+    tmux new-session -d -s nclip-listen "$_inner"
+    printf '[OK]    nclip-listen started (tmux session nclip-listen, sock %s)\n' "$SOCK" >&2
 }
 
 _do_foreground() {
@@ -131,20 +121,17 @@ open(o,"wb").write(d)
 _do_stop() {
     if ! _is_running; then
         printf '[INFO]  nclip-listen not running\n' >&2
-        rm -f "$SOCK" "$PID_FILE"
+        rm -f "$SOCK"
         return 0
     fi
-    _pid="$(cat "$PID_FILE")"
-    kill "$_pid" 2>/dev/null || true
-    # kill child nc processes that may outlive the loop
-    kill -- "-$_pid" 2>/dev/null || true
-    rm -f "$SOCK" "$PID_FILE"
-    printf '[OK]    nclip-listen stopped (pid %s)\n' "$_pid" >&2
+    tmux kill-session -t nclip-listen 2>/dev/null || true
+    rm -f "$SOCK"
+    printf '[OK]    nclip-listen stopped (tmux session nclip-listen)\n' >&2
 }
 
 _do_status() {
     if _is_running; then
-        printf '[OK]    running  pid=%-6s  sock=%s\n' "$(cat "$PID_FILE")" "$SOCK" >&2
+        printf '[OK]    running  tmux session=nclip-listen  sock=%s\n' "$SOCK" >&2
         [ -S "$SOCK" ] && printf '[OK]    socket exists\n' >&2 \
                        || printf '[WARN]  socket missing — RemoteForward not active?\n' >&2
     else
@@ -154,10 +141,7 @@ _do_status() {
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
 _tcp_is_running() {
-    [ -f "$TCP_PID_FILE" ] || return 1
-    _tpid="$(cat "$TCP_PID_FILE")"
-    [ -n "$_tpid" ] || return 1
-    kill -0 "$_tpid" 2>/dev/null
+    tmux has-session -t nclip-listen-tcp 2>/dev/null
 }
 
 _tcp_start() {
@@ -166,44 +150,38 @@ _tcp_start() {
         return 1
     fi
     if _tcp_is_running; then
-        printf '[INFO]  nclip-listen TCP already running (pid %s)\n' "$(cat "$TCP_PID_FILE")" >&2
+        printf '[INFO]  nclip-listen TCP already running (tmux session nclip-listen-tcp)\n' >&2
         return 0
     fi
-    mkdir -p "$(dirname "$CLIP_CACHE")" "$(dirname "$TCP_PID_FILE")"
-    (
-        while true; do
-            _tcp_tmp="${TMPDIR:-/tmp}/nclip-tcp-recv.$$"
-            ncat -l "$TCP_PORT" > "$_tcp_tmp" 2>/dev/null || true
-            if [ -s "$_tcp_tmp" ]; then
-                cp "$_tcp_tmp" "$CLIP_CACHE"
-                CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
-                setsid "$_clip_cmd" < "$_tcp_tmp" 2>/dev/null || "$_clip_cmd" < "$_tcp_tmp" || true
-            fi
-            rm -f "$_tcp_tmp"
-        done
-    ) &
-    _tpid=$!
-    printf '%s\n' "$_tpid" > "$TCP_PID_FILE"
-    printf '[OK]    nclip-listen TCP started (pid %s, port %s)\n' "$_tpid" "$TCP_PORT" >&2
+    mkdir -p "$(dirname "$CLIP_CACHE")"
+    _tcp_loop='while true; do
+        _tcp_tmp="${TMPDIR:-/tmp}/nclip-tcp-recv.$$"
+        ncat -l '"$TCP_PORT"' > "$_tcp_tmp" 2>/dev/null || true
+        if [ -s "$_tcp_tmp" ]; then
+            cp "$_tcp_tmp" "$CLIP_CACHE"
+            CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
+            setsid "$_clip_cmd" < "$_tcp_tmp" 2>/dev/null || "$_clip_cmd" < "$_tcp_tmp" || true
+        fi
+        rm -f "$_tcp_tmp"
+    done'
+    _tcp_inner="export TCP_PORT=$(printf %q "$TCP_PORT") CLIP_CACHE=$(printf %q "$CLIP_CACHE") _clip_cmd=$(printf %q "$_clip_cmd") _bindir=$(printf %q "$_bindir"); ${_tcp_loop}"
+    tmux new-session -d -s nclip-listen-tcp "$_tcp_inner"
+    printf '[OK]    nclip-listen TCP started (tmux session nclip-listen-tcp, port %s)\n' "$TCP_PORT" >&2
 }
 
 _tcp_stop() {
     if ! _tcp_is_running; then
         printf '[INFO]  nclip-listen TCP not running\n' >&2
-        rm -f "$TCP_PID_FILE"
         return 0
     fi
-    _tpid="$(cat "$TCP_PID_FILE")"
-    kill "$_tpid" 2>/dev/null || true
-    kill -- "-$_tpid" 2>/dev/null || true
+    tmux kill-session -t nclip-listen-tcp 2>/dev/null || true
     pkill -f "ncat -l $TCP_PORT" 2>/dev/null || true
-    rm -f "$TCP_PID_FILE"
-    printf '[OK]    nclip-listen TCP stopped (pid %s)\n' "$_tpid" >&2
+    printf '[OK]    nclip-listen TCP stopped (tmux session nclip-listen-tcp)\n' >&2
 }
 
 _tcp_status() {
     if _tcp_is_running; then
-        printf '[OK]    TCP running  pid=%-6s  port=%s\n' "$(cat "$TCP_PID_FILE")" "$TCP_PORT" >&2
+        printf '[OK]    TCP running  tmux session=nclip-listen-tcp  port=%s\n' "$TCP_PORT" >&2
     else
         printf '[INFO]  TCP not running\n' >&2
     fi

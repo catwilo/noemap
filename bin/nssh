@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # nssh — SSH to a device registered in devices.db
 #
 # Usage:  nssh <alias> [remote-command...]
