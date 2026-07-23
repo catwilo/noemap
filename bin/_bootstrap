@@ -35,6 +35,7 @@ fi
 LIB="$DATA/lib"
 DB="$DATA/state/devices.db"
 CFG="$DATA/config/ssh_config"
+HELPTXT="$DATA/readme.txt"
 export BASE="$DATA"
 
 # _source_mods mod.sh... — sources each module from LIB; missing = fatal.
