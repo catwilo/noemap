@@ -156,7 +156,7 @@ _tcp_start() {
     mkdir -p "$(dirname "$CLIP_CACHE")"
     _tcp_loop='while true; do
         _tcp_tmp="${TMPDIR:-/tmp}/nclip-tcp-recv.$$"
-        ncat -l '"$TCP_PORT"' > "$_tcp_tmp" 2>/dev/null || true
+        ncat -l 0.0.0.0 $TCP_PORT > "$_tcp_tmp" 2>/dev/null || true
         if [ -s "$_tcp_tmp" ]; then
             cp "$_tcp_tmp" "$CLIP_CACHE"
             CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
