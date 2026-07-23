@@ -79,7 +79,7 @@ open(o,\"wb\").write(d)
 " "$SOCK" "$_tmp_clip" 2>/dev/null || true
         if [ -s "$_tmp_clip" ]; then
             cp "$_tmp_clip" "$CLIP_CACHE"
-            CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
+            CLIP_ENV=termux "$_bindir/play-confirm.sh" 2>/dev/null || true
             setsid "$_clip_cmd" < "$_tmp_clip" 2>/dev/null || "$_clip_cmd" < "$_tmp_clip" || true
         fi
         rm -f "$_tmp_clip"
@@ -111,7 +111,7 @@ open(o,"wb").write(d)
 ' "$SOCK" "$_tmp_clip" 2>/dev/null || true
         if [ -s "$_tmp_clip" ]; then
             cp "$_tmp_clip" "$CLIP_CACHE"
-            CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
+            CLIP_ENV=termux "$_bindir/play-confirm.sh" 2>/dev/null || true
             "$_clip_cmd" < "$_tmp_clip" || true
         fi
         rm -f "$_tmp_clip"
@@ -159,7 +159,7 @@ _tcp_start() {
         ncat -l 0.0.0.0 $TCP_PORT > "$_tcp_tmp" 2>/dev/null || true
         if [ -s "$_tcp_tmp" ]; then
             cp "$_tcp_tmp" "$CLIP_CACHE"
-            CLIP_ENV=termux "$_bindir/../../clipso/play-confirm.sh" 2>/dev/null || true
+            CLIP_ENV=termux "$_bindir/play-confirm.sh" 2>/dev/null || true
             setsid "$_clip_cmd" < "$_tcp_tmp" 2>/dev/null || "$_clip_cmd" < "$_tcp_tmp" || true
         fi
         rm -f "$_tcp_tmp"
