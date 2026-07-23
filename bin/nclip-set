@@ -133,7 +133,11 @@ if ! printf '%s' "$_token" | "$NCLIP_SEND" "$_dst" >/dev/null 2>&1; then
 fi
 
 # Read dst's clipso cache and compare.
-_got="$("$NSSH" "$_dst" 'cat "${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last"' 2>/dev/null || true)"
+if [ "$_self_alias" = "$_dst" ]; then
+    _got="$(cat "${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last" 2>/dev/null || true)"
+else
+    _got="$("$NSSH" "$_dst" 'cat "${XDG_CACHE_HOME:-$HOME/.cache}/clipso/last"' 2>/dev/null || true)"
+fi
 
 # --- 4. OK / FAIL ------------------------------------------------------
 if [ "$_got" = "$_token" ]; then
