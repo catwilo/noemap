@@ -38,7 +38,7 @@ CONF="$DATA/state/clip-dir.conf"
 NCLIP_SEND="$_bindir/nclip-send"
 NSSH="$_bindir/nssh"
 
-_source_mods util.sh devices.sh
+_source_mods util.sh devices.sh identity.sh
 
 # --- subcommands: status / clear ---------------------------------------
 case "${1:-}" in
@@ -105,13 +105,25 @@ _tmp_conf="$(mktemp "${TMPDIR:-/tmp}/clip-dir.XXXXXX")"
 mv -f "$_tmp_conf" "$CONF"
 printf '[OK]    direction written: %s -> %s\n' "$_src" "$_dst" >&2
 
-# --- 2. start nclip-listen on dst via nssh -----------------------------
+# --- 2. start nclip-listen on dst -- self-aware gate --------------------
 # nclip-listen start is idempotent (no-op if already running).
-if ! "$NSSH" "$_dst" 'nclip-listen start-tcp' >/dev/null 2>&1; then
-    log ERROR "failed to start nclip-listen TCP on '$_dst'"
+_self_alias="$(node_alias 2>/dev/null)"
+if [ "$_self_alias" = "$_dst" ]; then
+    if ! nclip-listen start-tcp >/dev/null 2>&1; then
+        log ERROR "failed to start nclip-listen TCP locally on '$_dst'"
+        exit 1
+    fi
+    printf '[OK]    nclip-listen TCP started locally on %s (self)\n' "$_dst" >&2
+elif [ -z "$_self_alias" ]; then
+    log ERROR "local node identity unresolved -- run 'noemap --deep' first"
     exit 1
+else
+    if ! "$NSSH" "$_dst" 'nclip-listen start-tcp' >/dev/null 2>&1; then
+        log ERROR "failed to start nclip-listen TCP on '$_dst'"
+        exit 1
+    fi
+    printf '[OK]    nclip-listen TCP started on %s\n' "$_dst" >&2
 fi
-printf '[OK]    nclip-listen TCP started on %s\n' "$_dst" >&2
 
 # --- 3. smoke-test: send token src->dst, read it back ------------------
 _token="nclip-test-$$-$(date +%s)"
