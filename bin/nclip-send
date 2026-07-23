@@ -31,7 +31,7 @@ _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
 . "$_bindir/_bootstrap"
 TCP_PORT="${CLIP_TCP_PORT:-9988}"
 
-_source_mods util.sh devices.sh
+_source_mods util.sh devices.sh identity.sh
 
 case "${1:-}" in
     -h|--help)
@@ -60,6 +60,13 @@ _row="$(resolve_device "$_alias" "$DB")"
 _ip="$(printf '%s\n'   "$_row" | cut -d'|' -f1)"
 _user="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
 _port="$(printf '%s\n' "$_row" | cut -d'|' -f3)"
+
+# noemap#31 -- consume the existing self/remote detection instead of
+# re-resolving it here. is_local_ip (lib/identity.sh) already handles
+# loopback, MY_IP, own devices.db row, and live ifconfig.
+if is_local_ip "$_ip"; then
+    _ip="127.0.0.1"
+fi
 
 [ -n "$_ip" ] && [ -n "$_user" ] || {
     log ERROR "could not resolve alias: $_alias"
