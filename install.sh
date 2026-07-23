@@ -162,6 +162,16 @@ done
 log INFO "libs installed"
 
 # ---------------------------------------------------------------------------
+# Copy readme.txt (help text, read at runtime by _print_help) to DATADIR
+# ---------------------------------------------------------------------------
+if [ -f "$SCRIPT_DIR/readme.txt" ]; then
+    cp "$SCRIPT_DIR/readme.txt" "$DATADIR/readme.txt"
+    log INFO "readme.txt installed"
+else
+    log WARN "readme.txt not found in repo -- noemap -h will fail until present"
+fi
+
+# ---------------------------------------------------------------------------
 # Copy tools to BINDIR (real files, executable)
 # ---------------------------------------------------------------------------
 for _b in "$SCRIPT_DIR"/bin/*; do
