@@ -157,6 +157,68 @@ export NOEMAP_IFACE
 # ---------------------------------------------------------------------------
 _source_mods util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh
 
+
+# ---------------------------------------------------------------------------
+# ssh-setup <alias> — configure Ed25519 key-based SSH auth for a registered
+# device. Generates a key if missing, installs it on the remote via
+# ssh-copy-id (or a manual ssh+cat fallback), then verifies the connection.
+# ---------------------------------------------------------------------------
+_do_ssh_setup() {
+    _alias="${1:-}"
+    [ -n "$_alias" ] || { printf '[ERROR] usage: noemap ssh-setup <alias>\n' >&2; exit 1; }
+
+    _db="$BASE/state/devices.db"
+    [ -f "$_db" ] || { log ERROR "devices database missing: $_db"; exit 1; }
+
+    _line="$(awk -F'|' -v a="$_alias" '$1 == a { print; exit }' "$_db" 2>/dev/null || true)"
+    [ -n "$_line" ] || { log ERROR "unknown device alias: '$_alias'"; exit 1; }
+
+    _ip="$(printf '%s\n' "$_line" | cut -d'|' -f2)"
+    _user="$(printf '%s\n' "$_line" | cut -d'|' -f3)"
+    _port="$(printf '%s\n' "$_line" | cut -d'|' -f4)"
+    [ -n "$_port" ] || _port=22
+    [ -n "$_user" ] || { log ERROR "no user set for '$_alias' — run nssh once to set it"; exit 1; }
+
+    log INFO "ssh-setup: $_alias ($_user@$_ip:$_port)"
+
+    _key="$HOME/.ssh/id_ed25519"
+    if [ ! -f "$_key" ]; then
+        log INFO "no Ed25519 key found — generating $_key"
+        mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+        require_cmd ssh-keygen
+        ssh-keygen -t ed25519 -f "$_key" -N "" -C "noemap-$(node_alias 2>/dev/null || hostname)" || {
+            log ERROR "ssh-keygen failed"; exit 1
+        }
+        chmod 600 "$_key"
+    else
+        log INFO "using existing key: $_key"
+    fi
+
+    if has_cmd ssh-copy-id; then
+        log INFO "installing key via ssh-copy-id"
+        ssh-copy-id -p "$_port" -i "${_key}.pub" "$_user@$_ip" || {
+            log ERROR "ssh-copy-id failed"; exit 1
+        }
+    else
+        log WARN "ssh-copy-id not found — using manual fallback"
+        _pub="$(cat "${_key}.pub")"
+        ssh -p "$_port" "$_user@$_ip" "
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            grep -qxF '$_pub' ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' '$_pub' >> ~/.ssh/authorized_keys
+            chmod 600 ~/.ssh/authorized_keys
+        " || { log ERROR "manual key install failed"; exit 1; }
+    fi
+
+    log INFO "verifying key-based connection"
+    if ssh -p "$_port" -o BatchMode=yes -o ConnectTimeout=5 "$_user@$_ip" true 2>/dev/null; then
+        log OK "ssh-setup complete for '$_alias' — key auth verified"
+    else
+        log ERROR "key installed but verification failed — check manually: ssh -p $_port $_user@$_ip"
+        exit 1
+    fi
+}
+if [ "${1:-}" = "ssh-setup" ]; then shift; _do_ssh_setup "$@"; exit 0; fi
+
 init_session
 
 trap 'release_lock; cleanup_session' EXIT
