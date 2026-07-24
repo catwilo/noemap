@@ -125,6 +125,8 @@ echo "Listo. Reconecta SSH para crear el socket en el servidor."
 CLIENTEOF
 }
 if [ "${1:-}" = client-setup ]; then _do_client_setup; exit 0; fi
+_source_mods util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh
+
 
 # ---------------------------------------------------------------------------
 # ssh-setup <alias> — configure Ed25519 key-based SSH auth for a registered
@@ -212,12 +214,6 @@ done
 export NOEMAP_FULL_PORTS
 export NOEMAP_DEEP
 export NOEMAP_IFACE
-
-# ---------------------------------------------------------------------------
-# Bootstrap
-# ---------------------------------------------------------------------------
-_source_mods util.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh
-
 
 
 init_session
