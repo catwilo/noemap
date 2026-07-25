@@ -133,9 +133,10 @@ fi
 _src="$(resolve_scp_target "$_src_raw" "$DB")"
 _dst="$(resolve_scp_target "$_dst_raw" "$DB")"
 
-# Port comes from devices.db, same alias resolution path as host/user.
-_port="$(_port_for "$_src_raw")"
-[ -z "$_port" ] && _port="$(_port_for "$_dst_raw")"
+# Port comes from devices.db, resolved independently per side —
+# scp only accepts one -P per invocation, so src and dst never share one.
+_port_src="$(_port_for "$_src_raw")"
+_port_dst="$(_port_for "$_dst_raw")"
 
 # -----------------------------------------------------------------------
 # Build scp flags
@@ -145,33 +146,49 @@ if [ "$_recursive" = true ]; then
     _r_flag="-r"
 fi
 
-_p_flag=""
-[ -n "$_port" ] && _p_flag="-P $_port"
-
 # Disable ControlMaster for non-interactive transfers
 export NOEMAP_SSH_ROLE=transfer
+
+_scp_args="-T -o Compression=yes -o ControlMaster=no"
+if [ -f "$CFG" ]; then
+    _scp_args="$_scp_args -F $CFG"
+else
+    log WARN "ssh_config not found at $CFG — connecting without it"
+fi
 
 # -----------------------------------------------------------------------
 # Transfer
 # -----------------------------------------------------------------------
-if [ -f "$CFG" ]; then
-    # shellcheck disable=SC2086
-    exec scp \
-        -T \
-        -F "$CFG" \
-        -o Compression=yes \
-        -o ControlMaster=no \
-        $_p_flag \
-        $_r_flag \
-        "$_src" "$_dst"
+if [ "$_src_is_remote" = true ] && [ "$_dst_is_remote" = true ] \
+   && [ -n "$_port_src" ] && [ -n "$_port_dst" ] && [ "$_port_src" != "$_port_dst" ]; then
+    # Both ends remote with different ports — scp can't hold two ports in
+    # one invocation, so relay through a local temp (own port per hop).
+    init_session
+    if [ "$_recursive" = true ]; then
+        _relay="$(session_tmp relay)"
+        mkdir -p "$_relay"
+        # shellcheck disable=SC2086
+        scp $_scp_args -P "$_port_src" -r "$_src" "$_relay/" || {
+            log ERROR "relay hop 1 failed (src side, port $_port_src)"
+            exit 1
+        }
+        # shellcheck disable=SC2086
+        exec scp $_scp_args -P "$_port_dst" -r "$_relay"/* "$_dst"
+    else
+        _relay="$(session_tmp relay)"
+        # shellcheck disable=SC2086
+        scp $_scp_args -P "$_port_src" "$_src" "$_relay" || {
+            log ERROR "relay hop 1 failed (src side, port $_port_src)"
+            exit 1
+        }
+        # shellcheck disable=SC2086
+        exec scp $_scp_args -P "$_port_dst" "$_relay" "$_dst"
+    fi
 else
-    log WARN "ssh_config not found at $CFG — connecting without it"
+    _port="$_port_src"
+    [ -z "$_port" ] && _port="$_port_dst"
+    _p_flag=""
+    [ -n "$_port" ] && _p_flag="-P $_port"
     # shellcheck disable=SC2086
-    exec scp \
-        -T \
-        -o Compression=yes \
-        -o ControlMaster=no \
-        $_p_flag \
-        $_r_flag \
-        "$_src" "$_dst"
+    exec scp $_scp_args $_p_flag $_r_flag "$_src" "$_dst"
 fi
