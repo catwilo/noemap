@@ -31,5 +31,12 @@ Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'interactive' ]"
 Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'transfer' ]"
     ControlMaster no
 
+# nssh/ndevs internal calls (registry/key propagation) -- never prompt for
+# password; fail fast instead of hanging when a node lacks a key yet.
+# (callers set NOEMAP_SSH_ROLE=automation before exec'ing ssh, same pattern
+# as transfer above -- interactive nssh usage by a human is unaffected)
+Match exec "[ \"${NOEMAP_SSH_ROLE:-}\" = 'automation' ]"
+    BatchMode yes
+
 # User per-host overrides (RemoteForward, IdentityFile, etc.)
 Include ~/.ssh/config
