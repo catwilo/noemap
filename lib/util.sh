@@ -190,6 +190,30 @@ safe_timeout() {
 }
 
 # ---------------------------------------------------------------------------
+# Reachability
+# ---------------------------------------------------------------------------
+
+# reachable_ssh ip [port] -- returns 0 if the SSH port accepts a TCP
+# connection. Uses nc -z with a 5s timeout. Best-effort: absence of nc
+# is not fatal (returns 0, i.e. assumes reachable). Shared helper for any
+# caller (ndevs, ut distribution) that needs a silent skip-if-unreachable
+# check before attempting a connection.
+reachable_ssh() {
+    _rs_ip="$1"; _rs_port="${2:-22}"
+    has_cmd nc || return 0
+    nc -z -w5 "$_rs_ip" "$_rs_port" >/dev/null 2>&1
+}
+
+# reachable_cloud -- returns 0 if github.com answers a single ping within
+# a short timeout. Lightweight, best-effort presence check for treating
+# "cloud" (GitHub) as a node in the P2P distribution model -- cloud sync
+# itself still goes through plain git fetch/push, never a custom transport.
+reachable_cloud() {
+    has_cmd ping || return 0
+    ping -c 1 -W 3 github.com >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
 # known_hosts hygiene
 # ---------------------------------------------------------------------------
 KNOWN_HOSTS="$HOME/.local/share/noemap/known_hosts"

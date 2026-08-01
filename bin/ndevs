@@ -107,13 +107,8 @@ _snapshot_db() {
     printf '%s\n' "$_snap_path"
 }
 
-# _verify_ssh ip port — returns 0 if the SSH port accepts a TCP connection.
-# Uses nc -z with a 5s timeout. Best-effort: absence of nc is not fatal.
-_verify_ssh() {
-    _vs_ip="$1"; _vs_port="${2:-22}"
-    has_cmd nc || return 0
-    nc -z -w5 "$_vs_ip" "$_vs_port" >/dev/null 2>&1
-}
+# _verify_ssh moved to lib/util.sh as reachable_ssh() -- shared with ut
+# distribution. Sourced via _source_mods util.sh above.
 
 # _prompt_field label current — prompts user; returns new value or current if empty.
 _prompt_field() {
@@ -263,7 +258,7 @@ _cmd_update_ip() {
     mv -f "$_tmp_db" "$DB"
     log OK "updated '$_alias': ip $_old_ip → $_new_ip"
 
-    if _verify_ssh "$_new_ip" "$(printf '%s\n' "$_row" | cut -d'|' -f4)"; then
+    if reachable_ssh "$_new_ip" "$(printf '%s\n' "$_row" | cut -d'|' -f4)"; then
         log OK "ssh check: $_new_ip reachable"
     else
         log WARN "ssh check: $_new_ip not reachable — entry kept; rollback with: ndevs --rollback $_alias"
@@ -287,7 +282,7 @@ _cmd_add() {
     log OK "registered '$_alias' ip=$_ip user=$_user port=$_port"
 
     # verify SSH reachability; the entry stays persistent either way
-    if _verify_ssh "$_ip" "$_port"; then
+    if reachable_ssh "$_ip" "$_port"; then
         log OK "ssh check: $_ip:$_port reachable"
     else
         log WARN "ssh check: $_ip:$_port not reachable — entry kept; rollback with: ndevs --rollback $_alias"
@@ -305,11 +300,15 @@ _propagate_db() {
     [ -f "$DB" ] || return 0
     has_cmd nscp || { log WARN "nscp not found — skipping db propagation"; return 0; }
     _remote_path="$HOME/.local/share/noemap/state/devices.db"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
-    while IFS='|' read -r _pa _pip; do
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
+    while IFS='|' read -r _pa _pip _pport; do
         [ -n "$_pa" ] || continue
         [ "$_pip" = "$_skip_ip" ] && continue
         case "$_pip" in 100.*) continue ;; esac
+        if ! reachable_ssh "$_pip" "$_pport"; then
+            log WARN "propagate to $_pa skipped (unreachable: $_pip:$_pport)"
+            continue
+        fi
         if nscp "$DB" "${_pa}:${_remote_path}" >/dev/null 2>&1; then
             log OK "propagated devices.db -> $_pa"
         else
@@ -334,10 +333,14 @@ _cmd_push_vpn() {
     _require_db
     has_cmd nscp || { log ERROR "nscp not found"; exit 1; }
     _remote_path="$HOME/.local/share/noemap/state/devices.db"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
-    while IFS='|' read -r _pa _pip; do
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
+    while IFS='|' read -r _pa _pip _pport; do
         [ -n "$_pa" ] || continue
         case "$_pip" in 100.*) ;; *) continue ;; esac
+        if ! reachable_ssh "$_pip" "$_pport"; then
+            log WARN "push to $_pa skipped (unreachable: $_pip:$_pport)"
+            continue
+        fi
         if nscp "$DB" "${_pa}:${_remote_path}" >/dev/null 2>&1; then
             log OK "pushed devices.db -> $_pa ($_pip)"
         else
@@ -356,12 +359,16 @@ _distribute_registry() {
     # Skip self by local IP (MY_IP if exported, else any 127.* / own row).
     _my_ip="${MY_IP:-}"
     _my_alias="$(node_alias 2>/dev/null || printf '')"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DB" | \
-    while IFS='|' read -r _na _nip; do
+    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
+    while IFS='|' read -r _na _nip _nport; do
         [ -n "$_na" ] || continue
         [ "$_na" = "$_my_alias" ] && continue
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_nip"; then continue; fi
         case "$_nip" in 127.*|localhost) continue ;; esac
+        if ! reachable_ssh "$_nip" "$_nport"; then
+            log WARN "registry -> $_na skipped (unreachable: $_nip:$_nport)"
+            continue
+        fi
         if nssh "$_na" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_reg" < "$REGISTRY_DB" >/dev/null 2>&1; then
             log OK "registry -> $_na"
         else
