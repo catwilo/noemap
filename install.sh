@@ -1,20 +1,23 @@
 #!/bin/sh
-# install.sh  noemap installer (standalone-copy model)
+# install.sh  noemap installer (symlink model)
 #
-# Copies tools to a bin dir already on PATH, and libs to a fixed shared
-# dir, so the source repo can be deleted afterwards and tools still work.
+# Symlinks tools, libs, and managed config files directly from the repo
+# checkout, so updates to these files (code, ssh_config) are reflected
+# immediately without re-running install.sh. The repo must remain present
+# at the checked-out path; deleting it will break the installation.
 #
-#   Termux : tools -> $PREFIX/bin
-#   Debian : tools -> ~/.local/bin
-#   libs   : ~/.local/share/noemap/lib   (both platforms)
+#   Termux : symlink bin/* → $PREFIX/bin, lib/* → ~/.local/share/noemap/lib
+#   Debian : symlink bin/* → ~/.local/bin, lib/* → ~/.local/share/noemap/lib
+#   config : symlink config/ssh_config → ~/.local/share/noemap/config/ssh_config
+#   state  : real files (devices.db, cache.env) remain in ~/.local/share/noemap/state
 #
 # Usage:
 #   sh install.sh                     -- install/update noemap (idempotent)
 #   sh install.sh client-setup <host> -- emit CLIENT clipboard setup script
 #   sh install.sh -h | --help         -- show this help
 #
-# Idempotent: safe to re-run. state/devices.db and config/ssh_config in
-# the shared data dir are never overwritten (user data preserved).
+# Idempotent: safe to re-run. state/devices.db stays user-owned, never overwritten.
+
 
 set -eu
 
@@ -136,61 +139,45 @@ mkdir -p "$BINDIR" "$LIBDIR" "$STATEDIR" "$CFGDIR" "$DATADIR/logs"
 chmod 700 "$DATADIR"
 
 # ---------------------------------------------------------------------------
-# Remove stale symlinks in BINDIR that point back into any repo checkout.
-# Previous installs symlinked $BINDIR/<tool> -> <repo>/bin/<tool>; those
-# break the "repo is deletable" guarantee, so replace them with real copies.
-# ---------------------------------------------------------------------------
-for _l in "$BINDIR"/*; do
-    [ -L "$_l" ] || continue
-    [ -e "$_l" ] && continue
-    _target="$(readlink -f "$_l" 2>/dev/null || true)"
-    case "$_target" in
-        "$SCRIPT_DIR"/*)
-            log INFO "removing broken symlink: $_l -> $_target"
-            rm -f "$_l"
-            ;;
-    esac
-done
-
-# ---------------------------------------------------------------------------
-# Copy libs to the shared dir (real files)
+# Symlink libs to the shared dir (source of truth stays the repo)
 # ---------------------------------------------------------------------------
 for _l in "$SCRIPT_DIR"/lib/*.sh; do
     [ -f "$_l" ] || continue
-    cp "$_l" "$LIBDIR/$(basename "$_l")"
+    ln -sf "$_l" "$LIBDIR/$(basename "$_l")"
 done
-log INFO "libs installed"
+log INFO "libs linked"
 
 # ---------------------------------------------------------------------------
-# Copy readme.txt (help text, read at runtime by _print_help) to DATADIR
+# Symlink readme.txt (help text, read at runtime by _print_help)
 # ---------------------------------------------------------------------------
 if [ -f "$SCRIPT_DIR/readme.txt" ]; then
-    cp "$SCRIPT_DIR/readme.txt" "$DATADIR/readme.txt"
-    log INFO "readme.txt installed"
+    ln -sf "$SCRIPT_DIR/readme.txt" "$DATADIR/readme.txt"
+    log INFO "readme.txt linked"
 else
     log WARN "readme.txt not found in repo -- noemap -h will fail until present"
 fi
 
 # ---------------------------------------------------------------------------
-# Copy tools to BINDIR (real files, executable)
+# Symlink tools to BINDIR (executable bit already set in the repo)
 # ---------------------------------------------------------------------------
 for _b in "$SCRIPT_DIR"/bin/*; do
     [ -f "$_b" ] || continue
     _name="$(basename "$_b")"
     case "$_name" in *.bak) continue ;; esac
-    cp "$_b" "$BINDIR/$_name"
-    chmod +x "$BINDIR/$_name"
+    ln -sf "$_b" "$BINDIR/$_name"
 done
-log INFO "tools installed"
+log INFO "tools linked"
 
 # ---------------------------------------------------------------------------
 # Seed user data (never overwrite existing)
 # ---------------------------------------------------------------------------
-if [ ! -f "$CFGDIR/ssh_config" ] && [ -f "$SCRIPT_DIR/config/ssh_config" ]; then
-    cp "$SCRIPT_DIR/config/ssh_config" "$CFGDIR/ssh_config"
-    log INFO "ssh_config installed"
-else
-    log INFO "ssh_config left intact"
+# ---------------------------------------------------------------------------
+# Symlink managed config (Include ~/.ssh/config in ssh_config already
+# covers per-user overrides, so the file itself stays fully repo-managed).
+# ---------------------------------------------------------------------------
+if [ -f "$SCRIPT_DIR/config/ssh_config" ]; then
+    ln -sf "$SCRIPT_DIR/config/ssh_config" "$CFGDIR/ssh_config"
+    log INFO "ssh_config linked"
 fi
 
 if [ ! -f "$STATEDIR/devices.db" ]; then
