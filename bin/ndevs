@@ -53,30 +53,41 @@ _has_data() {
 }
 
 _print_table() {
-    awk -F'|' '
+    _pt_data="$(awk -F'|' '
         /^[[:space:]]*$/ { next } /^#/ { next }
-        NF >= 2 {
-            port = ($4 == "" ? "22" : $4)
+        NF >= 2 { port = ($4 == "" ? "22" : $4); print $1 "|" $2 "|" $3 "|" port }
+    ' "$DB")"
+    [ -n "$_pt_data" ] || return 0
+    _pt_marked="$(printf '%s\n' "$_pt_data" | while IFS='|' read -r _pa _pip _pu _pp; do
+        [ -n "$_pa" ] || continue
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_pip"; then
+            printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "<-- this"
+        else
+            printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" ""
+        fi
+    done)"
+    printf '%s\n' "$_pt_marked" | awk -F'|' '
+        {
             if(length($1)>w1) w1=length($1)
             if(length($2)>w2) w2=length($2)
             if(length($3)>w3) w3=length($3)
-            rows[NR]=$1 "|" $2 "|" $3 "|" port
+            rows[NR]=$1 "|" $2 "|" $3 "|" $4 "|" $5
         }
         END {
             w1=(w1>5?w1:5); w2=(w2>4?w2:4); w3=(w3>4?w3:4)
-            fmt="%-" w1 "s  %-" w2 "s  %-" w3 "s  %s\n"
+            fmt="%-" w1 "s  %-" w2 "s  %-" w3 "s  %-6s  %s\n"
             dash1=substr("----------------------------------------",1,w1)
             dash2=substr("----------------------------------------",1,w2)
             dash3=substr("----------------------------------------",1,w3)
-            printf fmt, "ALIAS","IP","USER","PORT"
-            printf fmt, dash1, dash2, dash3, "----"
+            printf fmt, "ALIAS","IP","USER","PORT","SELF"
+            printf fmt, dash1, dash2, dash3, "----", "----"
             for(i=1;i<=NR;i++) {
                 if(!(i in rows)) continue
                 n=split(rows[i],a,"|")
-                printf fmt, a[1],a[2],a[3],a[4]
+                printf fmt, a[1],a[2],a[3],a[4],a[5]
             }
         }
-    ' "$DB"
+    '
 }
 
 # _find_alias alias — prints the raw db line for the alias, or empty string.
