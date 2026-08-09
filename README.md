@@ -26,7 +26,6 @@ All commands accept `-h` for usage.
   resetall).
 - `nssh <alias> [cmd...]` -- SSH to an alias; forwards an optional command.
 - `nscp [-r] <src> <dst>` — scp using aliases; `alias:/path` for remote.
-- `nrsync <src> <dst>` — rsync using aliases; `alias:/path` for remote.
 - `nclip <alias:/path>` — copy a remote file to the clipboard via clipso.
 
 ## Interface selection

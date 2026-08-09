@@ -1,7 +1,7 @@
 #!/bin/sh
 # devices.sh — device database lookup helpers
 #
-# Shared by nssh, nscp, nrsync and any tool that resolves an alias
+# Shared by nssh, nscp and any tool that resolves an alias
 # to connection details.
 #
 # Database format (pipe-delimited, one device per line):

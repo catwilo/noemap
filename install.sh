@@ -224,7 +224,6 @@ has nmap || {
     has nmap || fail "nmap still not found after install attempt"
 }
 has scp   || log WARN "scp not found  nscp unavailable"
-has rsync || log WARN "rsync not found  nrsync unavailable"
 has ncat || {
     log WARN "ncat not found  nclip TCP listener unavailable"
 

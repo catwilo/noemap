@@ -149,7 +149,6 @@ render_connect() {
     printf "  %-12s  %s\n" "cmd"        "nssh $_ex uname -a"
     printf "  %-12s  %s\n" "copy from"  "nscp $_ex:/remote/path ./"
     printf "  %-12s  %s\n" "copy to"    "nscp ./file $_ex:/remote/"
-    printf "  %-12s  %s\n" "sync"       "nrsync ./dir/ $_ex:~/backup/"
     printf "  %-12s  %s\n" "clipboard"  "nclip $_ex:/remote/file"
     printf '\n'
 }
