@@ -34,9 +34,6 @@
     nscp <alias>:/remote/path ./local/    Copy from remote to local.
     nscp ./local/file <alias>:/remote/    Copy from local to remote.
 
-    nrsync ./local/dir/ <alias>:/remote/  Sync local -> remote (archive mode,
-    nrsync <alias>:/remote/ ./local/      resume, checksum verify).
-
     nclip <alias>:/remote/path            Copy remote file content to clipboard
                                           (requires clipso / xclip / pbcopy).
 

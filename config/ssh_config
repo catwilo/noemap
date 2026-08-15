@@ -7,7 +7,7 @@
 #
 # ControlMaster notes:
 #   - nssh uses ControlMaster auto for connection multiplexing convenience.
-#   - nscp and nrsync explicitly disable it (ControlMaster=no via Match) to
+#   - nscp explicitly disables it (ControlMaster=no via Match) to
 #     prevent hangs in non-interactive contexts if the master socket is slow.
 
 # Defaults for all hosts
