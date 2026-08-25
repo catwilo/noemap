@@ -13,9 +13,15 @@
 # The seed is never transmitted raw: node_id() emits SHA-256 truncated to 16
 # hex chars (follows systemd guidance against leaking machine-id directly).
 #
-# Master registry ($STATEDIR/registry.db) maps node-id -> canonical alias:
+# Master registry ($HOME/.noemap-registry/registry.db) maps
+# node-id -> canonical alias:
 #   NODE_ID|ALIAS|USER|PORT
 # It is the source of truth for "who is this device", independent of IP.
+# The registry lives in its own git-backed repo (github.com:catwilo/noemap-
+# registry, cloned to $HOME/.noemap-registry) so identity survives a node
+# reformat/reinstall via git, independent of any single node being reachable
+# (miko-task#102 precondition; see noemap#51). REGISTRY_DB can still be
+# overridden via env var for tests or alternate setups.
 
 # _identity_statedir -- resolve the state dir consistently with the rest of noemap.
 _identity_statedir() {
@@ -28,8 +34,28 @@ _identity_statedir() {
     fi
 }
 
-REGISTRY_DB="${REGISTRY_DB:-$(_identity_statedir)/registry.db}"
+# _identity_registry_default -- default path for the git-backed registry repo.
+_identity_registry_default() {
+    printf '%s\n' "$HOME/.noemap-registry/registry.db"
+}
+
+REGISTRY_DB="${REGISTRY_DB:-$(_identity_registry_default)}"
 MACHINE_SEED="${MACHINE_SEED:-$(_identity_statedir)/machine-seed}"
+
+# _identity_registry_warn_once -- if REGISTRY_DB points at the default
+# git-backed path but that repo is not cloned on this node, warn once to
+# stderr (not on every node_alias()/node_registry_row() call, which happens
+# frequently and would be noisy). Silent no-op once the repo exists, or when
+# REGISTRY_DB was overridden away from the default (caller's responsibility).
+_IDENTITY_REGISTRY_WARNED="${_IDENTITY_REGISTRY_WARNED:-0}"
+_identity_registry_warn_once() {
+    [ "$_IDENTITY_REGISTRY_WARNED" = "1" ] && return 0
+    [ "$REGISTRY_DB" = "$(_identity_registry_default)" ] || return 0
+    [ -d "$HOME/.noemap-registry/.git" ] && return 0
+    printf '[WARN] registry repo not found at %s -- clone it: git clone git@github.com:catwilo/noemap-registry.git %s\n' \
+        "$HOME/.noemap-registry" "$HOME/.noemap-registry" >&2
+    _IDENTITY_REGISTRY_WARNED=1
+}
 
 # _gen_uuid -- emit a fresh UUID v4 from the most portable source available.
 _gen_uuid() {
@@ -117,6 +143,7 @@ node_id() {
 
 # node_alias -- canonical alias for this node from the master registry, or empty.
 node_alias() {
+    _identity_registry_warn_once
     _nid="$(node_id)"
     [ -f "$REGISTRY_DB" ] || return 0
     awk -F'|' -v id="$_nid" '
@@ -127,6 +154,7 @@ node_alias() {
 
 # node_registry_row -- full registry row for this node, or empty.
 node_registry_row() {
+    _identity_registry_warn_once
     _nid="$(node_id)"
     [ -f "$REGISTRY_DB" ] || return 0
     awk -F'|' -v id="$_nid" '

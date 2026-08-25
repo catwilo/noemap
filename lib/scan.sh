@@ -180,9 +180,22 @@ _remove_offline_host() {
 # alias and the current user; port 8022 (Termux/Android sshd default). No-op
 # if MY_IP is already present. Safe to call repeatedly (idempotent).
 # ---------------------------------------------------------------------------
+# _registry_pull_latest -- best-effort git pull of the git-backed registry
+# repo before reading identity, so a node picks up aliases set by other
+# nodes without needing them reachable directly (noemap#51). Silent no-op
+# if the repo is not cloned, has no upstream, or the pull fails (offline) --
+# node_registry_row() falls back to whatever is on disk either way.
+_registry_pull_latest() {
+    _rpl_dir="$HOME/.noemap-registry"
+    [ -d "$_rpl_dir/.git" ] || return 0
+    ( cd "$_rpl_dir" && git pull --rebase origin main >/dev/null 2>&1 ) || true
+}
+
 _self_register() {
     [ -n "${MY_IP:-}" ] || return 0
     [ -f "$DEVICES_DB" ] || : > "$DEVICES_DB"
+
+    _registry_pull_latest
 
     # Resolve canonical identity from the master registry (node-id -> alias).
     # This is stable across IP/network/user changes, unlike hostname.

@@ -388,6 +388,46 @@ _distribute_registry() {
     done
 }
 
+# _registry_default_dir -- working tree of the git-backed registry repo.
+_registry_default_dir() { printf '%s\n' "$HOME/.noemap-registry"; }
+
+# _registry_commit_and_push -- if REGISTRY_DB is the default git-backed path
+# and that repo is cloned, commit the current registry.db to a throwaway
+# branch, push it, merge to main, push main, then delete the branch (local +
+# remote). Mirrors the manual flow already validated for this repo. Runs
+# best-effort: any git step failing warns and returns, never aborts the
+# caller (identity is already saved locally by the time this runs).
+_registry_commit_and_push() {
+    _rc_dir="$(_registry_default_dir)"
+    [ "$REGISTRY_DB" = "$_rc_dir/registry.db" ] || return 0
+    [ -d "$_rc_dir/.git" ] || { log WARN "registry repo not cloned at $_rc_dir -- skipping git commit"; return 0; }
+
+    _rc_branch="sync/$(date +%Y%m%d%H%M%S)-$(node_id 2>/dev/null || printf 'node')"
+
+    ( cd "$_rc_dir" || exit 1
+      git fetch origin >/dev/null 2>&1
+      git checkout main >/dev/null 2>&1 || git checkout -b main >/dev/null 2>&1
+      git pull --rebase origin main >/dev/null 2>&1
+      if git diff --quiet -- registry.db && git diff --cached --quiet -- registry.db; then
+          exit 0
+      fi
+      git checkout -b "$_rc_branch" >/dev/null 2>&1 || exit 1
+      git add registry.db
+      git commit -m "chore: sync registry.db ($(node_id 2>/dev/null))" >/dev/null 2>&1 || exit 1
+      git push -u origin "$_rc_branch" >/dev/null 2>&1 || exit 1
+      git checkout main >/dev/null 2>&1 || exit 1
+      git merge --no-edit "$_rc_branch" >/dev/null 2>&1 || exit 1
+      git push origin main >/dev/null 2>&1 || exit 1
+      git branch -d "$_rc_branch" >/dev/null 2>&1
+      git push origin --delete "$_rc_branch" >/dev/null 2>&1
+    )
+    if [ $? -eq 0 ]; then
+        log OK "registry.db committed + pushed to noemap-registry (main)"
+    else
+        log WARN "registry.db git sync failed -- resolve manually in $_rc_dir"
+    fi
+}
+
 # _cmd_node_set -- set THIS device's canonical identity in the master registry.
 # usage: ndevs --node-set <alias> [user] [port]
 _cmd_node_set() {
@@ -414,6 +454,7 @@ _cmd_node_set() {
     printf '%s|%s|%s|%s\n' "$_nid" "$_alias" "$_user" "$_port" >> "$_tmp"
     mv -f "$_tmp" "$REGISTRY_DB"
     log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
+    _registry_commit_and_push
     _distribute_registry
 }
 
