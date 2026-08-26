@@ -162,3 +162,56 @@ node_registry_row() {
         $1==id { print; exit }
     ' "$REGISTRY_DB" 2>/dev/null
 }
+
+# node_alias_set ALIAS USER PORT -- create or update this node's registry row.
+# Fails (return 1, writes nothing) if ALIAS is already taken by a DIFFERENT
+# node_id. If this node_id already has a row, that row is updated in place.
+# On success: writes REGISTRY_DB via mkit's atomic flow, then commits and
+# pushes the registry repo so the change survives a reformat of this node.
+node_alias_set() {
+    _nas_alias="$1"
+    _nas_user="$2"
+    _nas_port="$3"
+    if [ -z "$_nas_alias" ] || [ -z "$_nas_user" ] || [ -z "$_nas_port" ]; then
+        printf '[ERROR] node_alias_set: alias, user and port are required\n' >&2
+        return 1
+    fi
+    _identity_registry_warn_once
+    _nas_nid="$(node_id)"
+    _nas_dir="$(dirname "$REGISTRY_DB")"
+    mkdir -p "$_nas_dir" 2>/dev/null || true
+    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
+
+    _nas_owner="$(awk -F'|' -v a="$_nas_alias" '
+        /^[[:space:]]*$/{next}/^#/{next}
+        $2==a { print $1; exit }
+    ' "$REGISTRY_DB" 2>/dev/null)"
+    if [ -n "$_nas_owner" ] && [ "$_nas_owner" != "$_nas_nid" ]; then
+        printf '[ERROR] node_alias_set: alias "%s" already registered to node %s\n' \
+            "$_nas_alias" "$_nas_owner" >&2
+        return 1
+    fi
+
+    _nas_new="$(mktemp "${TMPDIR:-/tmp}/registry.db.XXXXXX")"
+    awk -F'|' -v id="$_nas_nid" '
+        $1==id { next }
+        { print }
+    ' "$REGISTRY_DB" > "$_nas_new" 2>/dev/null
+    printf '%s|%s|%s|%s\n' "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port" >> "$_nas_new"
+
+    mkit write "$REGISTRY_DB" "$_nas_new" || {
+        rm -f "$_nas_new"
+        printf '[ERROR] node_alias_set: mkit write failed\n' >&2
+        return 1
+    }
+
+    ( cd "$_nas_dir" && \
+      git add registry.db && \
+      git commit -m "chore(registry): set alias ${_nas_alias} for node ${_nas_nid}" && \
+      git push ) || {
+        printf '[ERROR] node_alias_set: registry.db written locally but commit/push failed -- resolve manually in %s\n' \
+            "$_nas_dir" >&2
+        return 1
+    }
+}
+
