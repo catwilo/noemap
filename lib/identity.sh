@@ -192,6 +192,10 @@ node_alias_set() {
         return 1
     fi
 
+    _nas_current="$(node_registry_row)"
+    _nas_target="${_nas_nid}|${_nas_alias}|${_nas_user}|${_nas_port}"
+    [ "$_nas_current" = "$_nas_target" ] && return 0
+
     _nas_new="$(mktemp "${TMPDIR:-/tmp}/registry.db.XXXXXX")"
     awk -F'|' -v id="$_nas_nid" '
         $1==id { next }
