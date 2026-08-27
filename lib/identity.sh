@@ -205,12 +205,21 @@ node_alias_set() {
         return 1
     }
 
+    _nas_branch="chore/registry-${_nas_nid}"
     ( cd "$_nas_dir" && \
+      git checkout main 2>/dev/null && \
+      git pull --rebase origin main && \
+      git checkout -B "$_nas_branch" && \
       git add registry.db && \
       git commit -m "chore(registry): set alias ${_nas_alias} for node ${_nas_nid}" && \
-      git push ) || {
-        printf '[ERROR] node_alias_set: registry.db written locally but commit/push failed -- resolve manually in %s\n' \
-            "$_nas_dir" >&2
+      git push -u origin "$_nas_branch" --force-with-lease && \
+      git checkout main && \
+      git merge --ff-only "$_nas_branch" && \
+      git push origin main && \
+      git branch -d "$_nas_branch" && \
+      git push origin --delete "$_nas_branch" ) || {
+        printf '[ERROR] node_alias_set: registry.db written locally but branch/commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
+            "$_nas_dir" "$_nas_branch" >&2
         return 1
     }
 }
