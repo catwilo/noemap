@@ -73,6 +73,24 @@ _get_ssh_banner() {
 }
 
 # ---------------------------------------------------------------------------
+# _get_host_key_fingerprint ip port -- SSH host key fingerprint, NO auth
+# required (host keys are exposed during the unauthenticated handshake).
+# Stable per-host identity independent of IP, used by _update_registered_hosts
+# to detect "known alias, new IP" without needing credentials (miko-task
+# invariant: never SSH with credentials to an unregistered host). Prints
+# "SHA256:xxxx..." or nothing if ssh-keyscan/ssh-keygen are unavailable or
+# the host is unreachable/refuses key exchange within the timeout.
+# ---------------------------------------------------------------------------
+_get_host_key_fingerprint() {
+    _hk_ip="$1"; _hk_port="${2:-22}"
+    has_cmd ssh-keyscan || return 0
+    has_cmd ssh-keygen  || return 0
+    ssh-keyscan -p "$_hk_port" -T 3 "$_hk_ip" 2>/dev/null \
+        | ssh-keygen -lf - 2>/dev/null \
+        | awk '{print $2; exit}'
+}
+
+# ---------------------------------------------------------------------------
 # Type classification
 #
 # Fast mode: port heuristic only.
@@ -264,7 +282,39 @@ _update_registered_hosts() {
             $2 == ip         { print $1; exit }
         ' "$DEVICES_DB" 2>/dev/null)"
 
-        [ -n "$_existing" ] || continue   # new host — handled by prompt_new_hosts
+        if [ -z "$_existing" ]; then
+            # No row registered under this IP. Before treating it as a brand
+            # new host, check if it is a KNOWN alias whose registered IP is
+            # now unreachable (candidate list built by _validate_registered_hosts
+            # into _STALE_ALIAS_CANDIDATES this same run) -- same host, new IP,
+            # detected via SSH host key fingerprint (miko-task#294 fix).
+            _hk_new="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}")"
+            if [ -n "$_hk_new" ] && [ -n "${_STALE_ALIAS_CANDIDATES:-}" ]; then
+                for _cand_alias in $_STALE_ALIAS_CANDIDATES; do
+                    _cand_hk="$(awk -F'|' -v a="$_cand_alias" '
+                        /^[[:space:]]*$/ { next }
+                        /^#/             { next }
+                        $1 == a          { print $5; exit }
+                    ' "$DEVICES_DB" 2>/dev/null)"
+                    [ -n "$_cand_hk" ] || continue
+                    if [ "$_cand_hk" = "$_hk_new" ]; then
+                        _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+                        awk -F'|' -v a="$_cand_alias" -v nip="$_ip" -v np="${_ssh_port:-22}" '
+                            /^[[:space:]]*$/ { print; next }
+                            /^#/             { print; next }
+                            $1 == a          { printf "%s|%s|%s|%s|%s\n",$1,nip,$3,np,$5; next }
+                            { print }
+                        ' "$DEVICES_DB" > "$_tmp_db"
+                        mv -f "$_tmp_db" "$DEVICES_DB"
+                        log OK "alias '$_cand_alias' moved to new IP $_ip (matched via SSH host key, old IP unreachable)"
+                        _existing="$_cand_alias"
+                        break
+                    fi
+                done
+            fi
+        fi
+
+        [ -n "$_existing" ] || continue   # genuinely new host — handled by prompt_new_hosts
 
         _cur_port="$(awk -F'|' -v ip="$_ip" '
             /^[[:space:]]*$/ { next }
@@ -278,13 +328,36 @@ _update_registered_hosts() {
             awk -F'|' -v ip="$_ip" -v np="$_ssh_port" '
                 /^[[:space:]]*$/ { print; next }
                 /^#/             { print; next }
-                $2 == ip         { printf "%s|%s|%s|%s\n",$1,$2,$3,np; next }
+                $2 == ip         { printf "%s|%s|%s|%s|%s\n",$1,$2,$3,np,$5; next }
                 { print }
             ' "$DEVICES_DB" > "$_tmp_db"
             mv -f "$_tmp_db" "$DEVICES_DB"
             log INFO "updated SSH port for '$_existing': $_cur_port → $_ssh_port"
         else
             log INFO "host $_ip already registered as '$_existing'"
+        fi
+
+        # Backfill: capture hostkey for this alias if it doesn't have one yet
+        # (miko-task#294 -- progressive curation so future IP-change detection
+        # has something to compare against). No-op once the field is filled.
+        _cur_hk="$(awk -F'|' -v ip="$_ip" '
+            /^[[:space:]]*$/ { next }
+            /^#/             { next }
+            $2 == ip         { print $5; exit }
+        ' "$DEVICES_DB" 2>/dev/null)"
+        if [ -z "$_cur_hk" ]; then
+            _new_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}")"
+            if [ -n "$_new_hk" ]; then
+                _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
+                awk -F'|' -v ip="$_ip" -v hk="$_new_hk" '
+                    /^[[:space:]]*$/ { print; next }
+                    /^#/             { print; next }
+                    $2 == ip         { printf "%s|%s|%s|%s|%s\n",$1,$2,$3,$4,hk; next }
+                    { print }
+                ' "$DEVICES_DB" > "$_tmp_db"
+                mv -f "$_tmp_db" "$DEVICES_DB"
+                log INFO "backfilled SSH host key fingerprint for '$_existing'"
+            fi
         fi
     done < "$_partial"
 }

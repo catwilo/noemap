@@ -254,6 +254,7 @@ discover_hosts        # Phase 0: validate registered + Phase 1/2: find new
 }
 
 fingerprint_hosts
+_purge_unrescued_stale_aliases   # miko-task#294: purge stale-IP aliases not rescued by hostkey match
 
 save_cache
 render_output

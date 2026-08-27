@@ -115,6 +115,8 @@ _validate_registered_hosts() {
 
     [ -s "$_reg_tmp" ] || return 0
 
+    _STALE_ALIAS_CANDIDATES=""
+
     while IFS= read -r _rip; do
         [ -n "$_rip" ] || continue
         [ "$_rip" = "$MY_IP" ] && continue   # never remove self
@@ -133,8 +135,25 @@ _validate_registered_hosts() {
             log INFO "registered host $_rip: online — accepted"
             printf '%s\n' "$_rip" >> "$_vout"
         else
-            log WARN "registered host $_rip: no response — removing from devices.db and known_hosts"
-            _remove_offline_host "$_rip"
+            # Before purging: this alias is a STALE-IP CANDIDATE this run --
+            # if a newly discovered host matches its SSH host key fingerprint,
+            # fingerprint.sh's _update_registered_hosts will move it to the
+            # new IP instead of both purging it here AND creating a duplicate
+            # "new host" entry (miko-task#294 fix). Only purge if it is not
+            # rescued by that hostkey match (checked again after the full
+            # discovery pass, in discover_hosts).
+            _stale_alias="$(awk -F'|' -v ip="$_rip" '
+                /^[[:space:]]*$/ { next }
+                /^#/             { next }
+                $2 == ip         { print $1; exit }
+            ' "$DEVICES_DB" 2>/dev/null)"
+            if [ -n "$_stale_alias" ]; then
+                _STALE_ALIAS_CANDIDATES="$_STALE_ALIAS_CANDIDATES $_stale_alias"
+                log WARN "registered host $_rip (alias '$_stale_alias'): no response -- candidate for IP-change detection this run (not purged yet)"
+            else
+                log WARN "registered host $_rip: no response — removing from devices.db and known_hosts"
+                _remove_offline_host "$_rip"
+            fi
         fi
     done < "$_reg_tmp"
 
@@ -224,12 +243,20 @@ _self_register() {
     # Dedup by MY_IP (the node's real LAN identity): drop any existing row with
     # this IP (e.g. stale 'localhost') AND any row with the canonical alias,
     # then append the single correct row.
+    # Preserve existing hostkey fingerprint (col 5) if this alias or IP
+    # already had one recorded, so re-registering every run doesn't wipe it
+    # (miko-task#294 fix depends on this field surviving across runs).
+    _self_prev_hk="$(awk -F'|' -v a="$_self_alias" -v ip="$MY_IP" '
+        /^[[:space:]]*$/{next}/^#/{next}
+        ($1==a || $2==ip) && $5!="" { print $5; exit }
+    ' "$DEVICES_DB" 2>/dev/null)"
+
     _sr_tmp="$(mktemp "${TMPDIR:-/tmp}/selfreg.XXXXXX")"
     awk -F'|' -v a="$_self_alias" -v ip="$MY_IP" '
         /^[[:space:]]*$/{print;next}/^#/{print;next}
         $1==a{next} $2==ip{next} {print}
     ' "$DEVICES_DB" > "$_sr_tmp" 2>/dev/null || cp "$DEVICES_DB" "$_sr_tmp"
-    printf '%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" >> "$_sr_tmp"
+    printf '%s|%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}" >> "$_sr_tmp"
     mv -f "$_sr_tmp" "$DEVICES_DB"
     log OK "self-registered $_self_alias ($MY_IP) in devices.db"
 }
@@ -259,6 +286,30 @@ sync_devices_to_nodes() {
             log WARN "sync to $_sa failed (node down?) -- skipped"
         fi
     done 3<&0
+}
+
+# ---------------------------------------------------------------------------
+# _purge_unrescued_stale_aliases -- call AFTER fingerprint_hosts(). Any alias
+# in _STALE_ALIAS_CANDIDATES that was NOT rescued (moved to a new IP) by
+# _update_registered_hosts' hostkey match still points at a dead IP -- purge
+# it now (miko-task#294 fix, second half: candidates not silently kept
+# forever if no matching new host showed up this run).
+# ---------------------------------------------------------------------------
+_purge_unrescued_stale_aliases() {
+    [ -n "${_STALE_ALIAS_CANDIDATES:-}" ] || return 0
+    for _cand in $_STALE_ALIAS_CANDIDATES; do
+        _cand_ip="$(awk -F'|' -v a="$_cand" '
+            /^[[:space:]]*$/ { next }
+            /^#/             { next }
+            $1 == a          { print $2; exit }
+        ' "$DEVICES_DB" 2>/dev/null)"
+        [ -n "$_cand_ip" ] || continue
+        if _ping_host "$_cand_ip"; then
+            continue  # rescued in place or still reachable somehow -- leave it
+        fi
+        log WARN "stale alias '$_cand' not rescued by hostkey match -- purging ($_cand_ip unreachable)"
+        _remove_offline_host "$_cand_ip"
+    done
 }
 
 # ---------------------------------------------------------------------------
