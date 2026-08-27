@@ -259,6 +259,10 @@ _self_register() {
     printf '%s|%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}" >> "$_sr_tmp"
     mv -f "$_sr_tmp" "$DEVICES_DB"
     log OK "self-registered $_self_alias ($MY_IP) in devices.db"
+    if command -v node_alias_set >/dev/null 2>&1; then
+        node_alias_set "$_self_alias" "$_self_user" "$_self_port" || \
+            log WARN "node_alias_set failed -- registry.db not updated this run (see error above)"
+    fi
 }
 
 # ---------------------------------------------------------------------------

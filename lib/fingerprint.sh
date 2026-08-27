@@ -291,6 +291,7 @@ _update_registered_hosts() {
             _hk_new="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}")"
             if [ -n "$_hk_new" ] && [ -n "${_STALE_ALIAS_CANDIDATES:-}" ]; then
                 for _cand_alias in $_STALE_ALIAS_CANDIDATES; do
+                    [ "$_cand_alias" = "$(node_alias 2>/dev/null)" ] && continue
                     _cand_hk="$(awk -F'|' -v a="$_cand_alias" '
                         /^[[:space:]]*$/ { next }
                         /^#/             { next }
