@@ -229,7 +229,7 @@ prompt_new_hosts() {
             _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
             awk -F'|' -v a="$_alias" -v ni="$_ip" -v np="${_ssh_port:-22}" '
                 /^[[:space:]]*$/{print;next}/^#/{print;next}
-                $1==a{ printf "%s|%s|%s|%s\n",$1,ni,$3,np; next }{ print }
+                $1==a{ printf "%s|%s|%s|%s|%s\n",$1,ni,$3,np,$5; next }{ print }
             ' "$_devdb" > "$_tmp_db"
             mv -f "$_tmp_db" "$_devdb"
             printf '\n'; continue
@@ -249,9 +249,10 @@ prompt_new_hosts() {
         done
 
         known_hosts_remove_ip "$_ip"
+        _new_host_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
         _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
         { cat "$_devdb"
-          printf '%s|%s|%s|%s\n' "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}"
+          printf '%s|%s|%s|%s|%s\n' "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}"
         } > "$_tmp_db"
 
         if awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF<2{exit 1}' "$_tmp_db"; then
