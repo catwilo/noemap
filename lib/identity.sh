@@ -42,6 +42,41 @@ _identity_registry_default() {
 REGISTRY_DB="${REGISTRY_DB:-$(_identity_registry_default)}"
 MACHINE_SEED="${MACHINE_SEED:-$(_identity_statedir)/machine-seed}"
 
+# NODE_CONFIG -- local per-node cache (offline-first). Not git-backed: this
+# is the node's own copy of its alias/user/port, so a node with no network
+# access to the master registry (or a fresh clone not yet pulled) still
+# knows who it is. Master registry (REGISTRY_DB) remains source of truth
+# whenever reachable; this file is the fallback, and is kept in sync with
+# it on every successful node_alias_set() (miko-task noemap#295).
+NODE_CONFIG="${NODE_CONFIG:-$(_identity_statedir)/node-config}"
+
+# _node_config_load -- prints "ALIAS|USER|PORT" from the local cache file,
+# or nothing if absent/empty.
+_node_config_load() {
+    [ -s "$NODE_CONFIG" ] || return 0
+    head -n1 "$NODE_CONFIG" 2>/dev/null
+}
+
+# _node_config_save ALIAS USER PORT -- writes the local cache file via
+# mkit's atomic flow. Best-effort: a failure here does not block the
+# master-registry write, only the local offline fallback.
+_node_config_save() {
+    _ncs_alias="$1"; _ncs_user="$2"; _ncs_port="$3"
+    [ -n "$_ncs_alias" ] && [ -n "$_ncs_user" ] && [ -n "$_ncs_port" ] || {
+        printf '[ERROR] _node_config_save: alias, user and port are required\n' >&2
+        return 1
+    }
+    _ncs_dir="$(dirname "$NODE_CONFIG")"
+    mkdir -p "$_ncs_dir" 2>/dev/null || true
+    _ncs_tmp="$(mktemp "${TMPDIR:-/tmp}/node-config.XXXXXX")"
+    printf '%s|%s|%s\n' "$_ncs_alias" "$_ncs_user" "$_ncs_port" > "$_ncs_tmp"
+    mkit write "$NODE_CONFIG" "$_ncs_tmp" || {
+        rm -f "$_ncs_tmp"
+        printf '[ERROR] _node_config_save: mkit write failed\n' >&2
+        return 1
+    }
+}
+
 # _identity_registry_warn_once -- if REGISTRY_DB points at the default
 # git-backed path but that repo is not cloned on this node, warn once to
 # stderr (not on every node_alias()/node_registry_row() call, which happens

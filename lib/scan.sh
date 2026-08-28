@@ -216,8 +216,9 @@ _self_register() {
 
     _registry_pull_latest
 
-    # Resolve canonical identity from the master registry (node-id -> alias).
-    # This is stable across IP/network/user changes, unlike hostname.
+    # Resolve canonical identity. Order: master registry (source of truth,
+    # requires REGISTRY_DB reachable/cloned) -> local node-config cache
+    # (offline-first fallback, miko-task noemap#295) -> nothing.
     _self_alias=""
     _self_user=""
     _self_port=""
@@ -227,6 +228,16 @@ _self_register() {
             _self_alias="$(printf '%s\n' "$_self_row" | cut -d'|' -f2)"
             _self_user="$(printf '%s\n'  "$_self_row" | cut -d'|' -f3)"
             _self_port="$(printf '%s\n'  "$_self_row" | cut -d'|' -f4)"
+        fi
+    fi
+
+    if [ -z "$_self_alias" ] && command -v _node_config_load >/dev/null 2>&1; then
+        _self_cache_row="$(_node_config_load 2>/dev/null)"
+        if [ -n "$_self_cache_row" ]; then
+            _self_alias="$(printf '%s\n' "$_self_cache_row" | cut -d'|' -f1)"
+            _self_user="$(printf '%s\n'  "$_self_cache_row" | cut -d'|' -f2)"
+            _self_port="$(printf '%s\n'  "$_self_cache_row" | cut -d'|' -f3)"
+            log INFO "identity resolved from local node-config cache (registry unreachable): $_self_alias"
         fi
     fi
 
@@ -262,6 +273,10 @@ _self_register() {
     if command -v node_alias_set >/dev/null 2>&1; then
         node_alias_set "$_self_alias" "$_self_user" "$_self_port" || \
             log WARN "node_alias_set failed -- registry.db not updated this run (see error above)"
+    fi
+    if command -v _node_config_save >/dev/null 2>&1; then
+        _node_config_save "$_self_alias" "$_self_user" "$_self_port" || \
+            log WARN "_node_config_save failed -- local offline cache not updated this run"
     fi
 }
 

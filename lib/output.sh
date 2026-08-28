@@ -29,8 +29,6 @@ render_output() {
     printf '\n'
     printf "${_C_BOLD}  NET   ${_C_RESET}%s\n" "${SUBNET:-?}"
     printf "${_C_BOLD}  GW    ${_C_RESET}%s\n" "${GW_IP:-?}"
-    printf "${_C_BOLD}  SELF  ${_C_RESET}%s  ${_C_DIM}[%s]${_C_RESET}\n" \
-        "${MY_IP:-?}" "${PRIMARY_IFACE:-?}"
     printf '\n'
 
     if [ ! -f "$_hosts_db" ] || [ ! -s "$_hosts_db" ]; then
@@ -132,6 +130,17 @@ render_registered_devices() {
     done
     rm -f "$_rows_tmp"
     printf '\n'
+
+    _local_alias=""
+    if command -v node_alias >/dev/null 2>&1; then
+        _local_alias="$(node_alias 2>/dev/null)"
+    fi
+    if [ -z "$_local_alias" ] && command -v _node_config_load >/dev/null 2>&1; then
+        _local_cache_row="$(_node_config_load 2>/dev/null)"
+        [ -n "$_local_cache_row" ] && _local_alias="$(printf '%s\n' "$_local_cache_row" | cut -d'|' -f1)"
+    fi
+    printf "  Local node: ${_C_GREEN}%s${_C_RESET}  ${_C_DIM}(%s [%s])${_C_RESET}\n\n" \
+        "${_local_alias:-unknown}" "${MY_IP:-?}" "${PRIMARY_IFACE:-?}"
 }
 
 render_connect() {
