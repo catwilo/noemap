@@ -31,7 +31,7 @@ _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
 . "$_bindir/_bootstrap"
 TCP_PORT="${CLIP_TCP_PORT:-9988}"
 
-_source_mods util.sh devices.sh identity.sh
+_source_mods util.sh blockdb.sh devices.sh identity.sh
 
 case "${1:-}" in
     -h|--help)

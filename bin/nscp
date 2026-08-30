@@ -41,7 +41,7 @@ _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
 # -----------------------------------------------------------------------
 # Load shared helpers
 # -----------------------------------------------------------------------
-_source_mods util.sh devices.sh
+_source_mods util.sh blockdb.sh devices.sh
 
 # -----------------------------------------------------------------------
 # Argument parsing

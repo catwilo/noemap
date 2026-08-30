@@ -38,7 +38,7 @@ CONF="$DATA/state/clip-dir.conf"
 NCLIP_SEND="$_bindir/nclip-send"
 NSSH="$_bindir/nssh"
 
-_source_mods util.sh devices.sh identity.sh
+_source_mods util.sh blockdb.sh devices.sh identity.sh
 
 # --- subcommands: status / clear ---------------------------------------
 case "${1:-}" in

@@ -36,7 +36,7 @@ CLIPSO="${CLIPSO_BIN:-$(command -v clipso 2>/dev/null || echo "$HOME/unix-toolki
 # -----------------------------------------------------------------------
 # Load shared helpers (log, has_cmd, resolve_device, _ensure_user)
 # -----------------------------------------------------------------------
-_source_mods util.sh devices.sh
+_source_mods util.sh blockdb.sh devices.sh
 
 # -----------------------------------------------------------------------
 # Argument validation
