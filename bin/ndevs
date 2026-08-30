@@ -7,6 +7,7 @@
 #   ndevs --rename <old> <new>   rename alias (cleans known_hosts if IP matches)
 #   ndevs --remove <alias>       remove device entry + prune known_hosts
 #   ndevs --update-ip <alias> <newip>  update IP, auto-clean known_hosts
+#   ndevs --registry-set <node-id> <alias> [user] [port]  edit any node's registry row
 #
 # Exit codes:
 #   0 — always for list (empty db is not an error)
@@ -32,9 +33,7 @@ _source_mods util.sh identity.sh blockdb.sh
 # automation Match block enforces BatchMode yes so a missing key fails fast.
 export NOEMAP_SSH_ROLE=automation
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 _require_db() {
     if [ ! -f "$DB" ]; then
@@ -45,59 +44,6 @@ _require_db() {
 
 _has_data() {
     [ -s "$DB" ] && echo yes || echo no
-}
-
-_print_table() {
-    _pt_aliases="$(awk '
-        BEGIN { RS=""; FS="\n" }
-        {
-            for (i = 1; i <= NF; i++) {
-                colon = index($i, ":")
-                if (colon == 0) continue
-                fk = substr($i, 1, colon - 1)
-                if (fk == "alias") { print substr($i, colon + 2); break }
-            }
-        }
-    ' "$DB" 2>/dev/null)"
-    [ -n "$_pt_aliases" ] || return 0
-
-    _pt_marked="$(printf '%s\n' "$_pt_aliases" | while IFS= read -r _pa; do
-        [ -n "$_pa" ] || continue
-        _pblk="$(blockdb_get "$DB" alias "$_pa")"
-        [ -n "$_pblk" ] || continue
-        _pip="$(blockdb_field "$_pblk" ip)"
-        _pu="$(blockdb_field "$_pblk" user)"
-        _pp="$(blockdb_field "$_pblk" port)"
-        [ -n "$_pp" ] || _pp=22
-        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_pip"; then
-            printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "<-- this"
-        else
-            printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" ""
-        fi
-    done)"
-    [ -n "$_pt_marked" ] || return 0
-    printf '%s\n' "$_pt_marked" | awk -F'|' '
-        {
-            if(length($1)>w1) w1=length($1)
-            if(length($2)>w2) w2=length($2)
-            if(length($3)>w3) w3=length($3)
-            rows[NR]=$1 "|" $2 "|" $3 "|" $4 "|" $5
-        }
-        END {
-            w1=(w1>5?w1:5); w2=(w2>4?w2:4); w3=(w3>4?w3:4)
-            fmt="%-" w1 "s  %-" w2 "s  %-" w3 "s  %-6s  %s\n"
-            dash1=substr("----------------------------------------",1,w1)
-            dash2=substr("----------------------------------------",1,w2)
-            dash3=substr("----------------------------------------",1,w3)
-            printf fmt, "ALIAS","IP","USER","PORT","SELF"
-            printf fmt, dash1, dash2, dash3, "----", "----"
-            for(i=1;i<=NR;i++) {
-                if(!(i in rows)) continue
-                n=split(rows[i],a,"|")
-                printf fmt, a[1],a[2],a[3],a[4],a[5]
-            }
-        }
-    '
 }
 
 # _find_alias alias — prints the block for the alias, or empty string.
@@ -136,9 +82,7 @@ _prompt_field() {
     [ -z "$_val" ] && printf '%s\n' "$_current" || printf '%s\n' "$_val"
 }
 
-# ---------------------------------------------------------------------------
 # Subcommands
-# ---------------------------------------------------------------------------
 
 _cmd_list() {
     _require_db
@@ -146,7 +90,38 @@ _cmd_list() {
         printf '[INFO] no devices registered\n' >&2
         exit 0
     fi
-    _print_table
+    _me="$(node_alias 2>/dev/null || printf '')"
+    _pt_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DB" 2>/dev/null)"
+    [ -n "$_pt_aliases" ] || return 0
+    printf '%s\n' "$_pt_aliases" | while IFS= read -r _pa; do
+        [ -n "$_pa" ] || continue
+        _pblk="$(blockdb_get "$DB" alias "$_pa")"
+        [ -n "$_pblk" ] || continue
+        _pip="$(blockdb_field "$_pblk" ip)"
+        _pu="$(blockdb_field "$_pblk" user)"
+        _pp="$(blockdb_field "$_pblk" port)"
+        [ -n "$_pp" ] || _pp=22
+        _pnid=""
+        if [ -f "$REGISTRY_DB" ]; then
+            _preg_blk="$(blockdb_get "$REGISTRY_DB" alias "$_pa")"
+            [ -n "$_preg_blk" ] && _pnid="$(blockdb_field "$_preg_blk" node_id)"
+        fi
+        if [ -n "$_me" ] && [ "$_pa" = "$_me" ]; then
+            printf 'alias=%s ip=%s user=%s port=%s node_id=%s (this node)\n' "$_pa" "$_pip" "$_pu" "$_pp" "${_pnid:-?}"
+        else
+            printf 'alias=%s ip=%s user=%s port=%s node_id=%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "${_pnid:-?}"
+        fi
+    done
 }
 
 _cmd_edit() {
@@ -255,7 +230,6 @@ _cmd_update_ip() {
 
     _propagate_db "$_new_ip"
 }
-
 
 _cmd_add() {
     [ $# -ge 3 ] || { printf 'usage: ndevs --add <alias> <ip> <user> [port]\n' >&2; exit 1; }
@@ -526,36 +500,43 @@ _cmd_node_add() {
     _distribute_registry
 }
 
-# _cmd_nodes -- list the master registry, marking which row is THIS device.
-_cmd_nodes() {
-    [ -f "$REGISTRY_DB" ] && [ -s "$REGISTRY_DB" ] || { log INFO "no nodes registered (use --node-set)"; return 0; }
-    _me="$(node_id 2>/dev/null || printf '')"
-    printf '  NODE-ID           ALIAS      USER       PORT  SELF\n'
-    _cn_nids="$(awk '
-        BEGIN { RS=""; FS="\n" }
-        {
-            for (i = 1; i <= NF; i++) {
-                colon = index($i, ":")
-                if (colon == 0) continue
-                fk = substr($i, 1, colon - 1)
-                if (fk == "node_id") { print substr($i, colon + 2); break }
-            }
-        }
-    ' "$REGISTRY_DB" 2>/dev/null)"
-    printf '%s\n' "$_cn_nids" | while IFS= read -r _cnid; do
-        [ -n "$_cnid" ] || continue
-        _cblk="$(blockdb_get "$REGISTRY_DB" node_id "$_cnid")"
-        [ -n "$_cblk" ] || continue
-        _calias="$(blockdb_field "$_cblk" alias)"
-        _cuser="$(blockdb_field "$_cblk" user)"
-        _cport="$(blockdb_field "$_cblk" port)"
-        printf "  %-16s  %-9s  %-9s  %-4s  %s\n" "$_cnid" "$_calias" "$_cuser" "$_cport" "$([ "$_cnid" = "$_me" ] && printf -- '<-- this')"
-    done
+# _cmd_registry_set -- edit ANY node's row in the master registry by explicit
+# node-id, overwriting alias/user/port. Unlike --node-set (restricted to THIS
+# node's own node_id), this targets any row -- the registry is cloud-backed
+# source of truth, so a correction made here from any node propagates via the
+# same commit+push+merge+distribute flow as --node-set. Fails if the target
+# alias is already owned by a DIFFERENT node_id (collision guard, same rule
+# as node_alias_set in identity.sh).
+# usage: ndevs --registry-set <node-id> <alias> [user] [port]
+_cmd_registry_set() {
+    [ $# -ge 2 ] || { printf 'usage: ndevs --registry-set <node-id> <alias> [user] [port]\n' >&2; exit 1; }
+    _rs_nid="$1"; _rs_alias="$2"; _rs_user="${3:-u}"; _rs_port="${4:-8022}"
+    mkdir -p "$(dirname "$REGISTRY_DB")"
+    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
+
+    _rs_owner_blk="$(blockdb_get "$REGISTRY_DB" alias "$_rs_alias")"
+    _rs_owner="$([ -n "$_rs_owner_blk" ] && blockdb_field "$_rs_owner_blk" node_id || printf '')"
+    if [ -n "$_rs_owner" ] && [ "$_rs_owner" != "$_rs_nid" ]; then
+        log ERROR "alias '$_rs_alias' already registered to node $_rs_owner"; exit 1
+    fi
+
+    _rs_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_rs_nid" "$_rs_alias" "$_rs_user" "$_rs_port")"
+    blockdb_upsert "$REGISTRY_DB" node_id "$_rs_nid" "$_rs_block"
+
+    _rs_commit_ok=1
+    _registry_commit_and_push || _rs_commit_ok=0
+    _rs_distribute_ok=1
+    _distribute_registry || _rs_distribute_ok=0
+
+    if [ "$_rs_commit_ok" -eq 1 ] && [ "$_rs_distribute_ok" -eq 1 ]; then
+        log OK "registry updated: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port"
+    else
+        log WARN "registry saved locally: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port -- $([ "$_rs_commit_ok" -eq 0 ] && printf 'registry git sync failed' )$([ "$_rs_commit_ok" -eq 0 ] && [ "$_rs_distribute_ok" -eq 0 ] && printf '; ')$([ "$_rs_distribute_ok" -eq 0 ] && printf 'node distribution incomplete')"
+    fi
 }
 
-# ---------------------------------------------------------------------------
+
 # Dispatch
-# ---------------------------------------------------------------------------
 
 case "${1:-}" in
     "")                   _cmd_list ;;
@@ -568,7 +549,7 @@ case "${1:-}" in
     --push-vpn)           shift; _cmd_push_vpn "$@" ;;
     --node-set)           shift; _cmd_node_set "$@" ;;
     --node-add)           shift; _cmd_node_add "$@" ;;
-    --nodes)              _cmd_nodes ;;
+    --registry-set)       shift; _cmd_registry_set "$@" ;;
     --resetall)           _cmd_resetall ;;
     -h|--help)
         printf 'usage: ndevs\n'
@@ -581,7 +562,7 @@ case "${1:-}" in
         printf '       ndevs --push-vpn <alias>\n'
         printf '       ndevs --node-set <alias> [user] [port]\n'
         printf '       ndevs --node-add <node-id> <alias> <user> <port>\n'
-        printf '       ndevs --nodes\n'
+        printf '       ndevs --registry-set <node-id> <alias> [user] [port]\n'
         printf '       ndevs --resetall\n'
         ;;
     *)
