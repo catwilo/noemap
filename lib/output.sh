@@ -75,10 +75,15 @@ render_registered_devices() {
 
     printf "${_C_BOLD}${_C_CYAN}  REGISTERED DEVICES${_C_RESET}\n\n"
 
-    # build rows + compute dynamic column widths
-    _rows_tmp="$(mktemp "${TMPDIR:-/tmp}/noemap-rows.XXXXXX")"
-    _n=0
-    _w1=5; _w2=2; _w3=4; _w4=4; _w5=2
+    _local_alias=""
+    if command -v node_alias >/dev/null 2>&1; then
+        _local_alias="$(node_alias 2>/dev/null)"
+    fi
+    if [ -z "$_local_alias" ] && command -v _node_config_load >/dev/null 2>&1; then
+        _local_cache_row="$(_node_config_load 2>/dev/null)"
+        [ -n "$_local_cache_row" ] && _local_alias="$(printf '%s\n' "$_local_cache_row" | cut -d'|' -f1)"
+    fi
+
     _rrd_aliases="$(blockdb_list "$_devdb" | awk '
         BEGIN { RS=""; FS="\n" }
         {
@@ -102,53 +107,15 @@ render_registered_devices() {
             _rrd_os_line="$(awk -F'|' -v ip="$_rrd_ip" '$1==ip{print $2; exit}' "$_hosts_db" 2>/dev/null)"
             [ -n "$_rrd_os_line" ] && _rrd_os="$_rrd_os_line"
         fi
-        printf '%s|%s|%s|%s|%s\n' "$_rrd_alias" "$_rrd_ip" "$_rrd_port" "$_rrd_user" "$_rrd_os" >> "$_rows_tmp"
+        if [ -n "$_local_alias" ] && [ "$_rrd_alias" = "$_local_alias" ]; then
+            printf "  ${_C_GREEN}alias=%s${_C_RESET} ip=%s port=%s user=%s os=%s (this node)\n" \
+                "$_rrd_alias" "$_rrd_ip" "$_rrd_port" "$_rrd_user" "$_rrd_os"
+        else
+            printf "  alias=%s ip=%s port=%s user=%s os=%s\n" \
+                "$_rrd_alias" "$_rrd_ip" "$_rrd_port" "$_rrd_user" "$_rrd_os"
+        fi
     done
-
-    [ -s "$_rows_tmp" ] || { rm -f "$_rows_tmp"; return 0; }
-
-    while IFS='|' read -r _a _i _p _u _o; do
-        [ -n "$_a" ] || continue
-        [ "${#_a}" -gt "$_w1" ] && _w1="${#_a}"
-        [ "${#_i}" -gt "$_w2" ] && _w2="${#_i}"
-        [ "${#_p}" -gt "$_w3" ] && _w3="${#_p}"
-        [ "${#_u}" -gt "$_w4" ] && _w4="${#_u}"
-        [ "${#_o}" -gt "$_w5" ] && _w5="${#_o}"
-    done < "$_rows_tmp"
-
-    _d1="$(printf '%*s' "$_w1" | tr ' ' '-')"
-    _d2="$(printf '%*s' "$_w2" | tr ' ' '-')"
-    _d3="$(printf '%*s' "$_w3" | tr ' ' '-')"
-    _d4="$(printf '%*s' "$_w4" | tr ' ' '-')"
-    _d5="$(printf '%*s' "$_w5" | tr ' ' '-')"
-    printf "  ${_C_BOLD}%-${_w1}s  %-${_w2}s  %-${_w3}s  %-${_w4}s  %s${_C_RESET}\n" \
-        "ALIAS" "IP" "PORT" "USER" "OS"
-    printf "  %s  %s  %s  %s  %s\n" "$_d1" "$_d2" "$_d3" "$_d4" "$_d5"
-
-    while IFS='|' read -r _a _i _p _u _o; do
-        [ -n "$_a" ] || continue
-        _c_os="${_C_RESET}"
-        case "$_o" in
-            mac)          _c_os="${_C_CYAN}"  ;;
-            android-ssh)  _c_os="${_C_GREEN}" ;;
-            linux*|unix*) _c_os="${_C_BOLD}"  ;;
-        esac
-        printf "  ${_C_GREEN}%-${_w1}s${_C_RESET}  ${_C_CYAN}%-${_w2}s${_C_RESET}  ${_C_YELLOW}%-${_w3}s${_C_RESET}  %-${_w4}s  ${_c_os}%s${_C_RESET}\n" \
-            "$_a" "$_i" "$_p" "$_u" "$_o"
-    done < "$_rows_tmp"
-    rm -f "$_rows_tmp"
     printf '\n'
-
-    _local_alias=""
-    if command -v node_alias >/dev/null 2>&1; then
-        _local_alias="$(node_alias 2>/dev/null)"
-    fi
-    if [ -z "$_local_alias" ] && command -v _node_config_load >/dev/null 2>&1; then
-        _local_cache_row="$(_node_config_load 2>/dev/null)"
-        [ -n "$_local_cache_row" ] && _local_alias="$(printf '%s\n' "$_local_cache_row" | cut -d'|' -f1)"
-    fi
-    printf "  Local node: ${_C_GREEN}%s${_C_RESET}  ${_C_DIM}(%s [%s])${_C_RESET}\n\n" \
-        "${_local_alias:-unknown}" "${MY_IP:-?}" "${PRIMARY_IFACE:-?}"
 }
 
 render_connect() {
