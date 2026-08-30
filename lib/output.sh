@@ -53,10 +53,8 @@ render_active_hosts() {
         [ -n "$_ip" ] || continue
         _alias=""
         if [ -f "$_devdb" ]; then
-            _alias="$(awk -F'|' -v ip="$_ip" '
-                /^[[:space:]]*$/{ next } /^#/{ next }
-                $2==ip{ print $1; exit }
-            ' "$_devdb" 2>/dev/null)"
+            _alias_blk="$(blockdb_get "$_devdb" ip "$_ip")"
+            [ -n "$_alias_blk" ] && _alias="$(blockdb_field "$_alias_blk" alias)"
         fi
         _port_disp="${_ssh_port:-?}"
         [ "$_port_disp" = "0" ] && _port_disp="-"
@@ -73,41 +71,51 @@ render_registered_devices() {
     _devdb="$BASE/state/devices.db"
     _hosts_db="$BASE/state/hosts.db"
 
-    [ -f "$_devdb" ] || return 0
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{found=1;exit}END{exit !found}' \
-        "$_devdb" 2>/dev/null || return 0
+    [ -f "$_devdb" ] && [ -s "$_devdb" ] || return 0
 
     printf "${_C_BOLD}${_C_CYAN}  REGISTERED DEVICES${_C_RESET}\n\n"
 
-    # build rows + compute dynamic column widths in one awk pass
+    # build rows + compute dynamic column widths
     _rows_tmp="$(mktemp "${TMPDIR:-/tmp}/noemap-rows.XXXXXX")"
-    awk -F'|' -v hdb="${_hosts_db:-}" '
-        /^[[:space:]]*$/{next}/^#/{next}NF<2{next}
+    _n=0
+    _w1=5; _w2=2; _w3=4; _w4=4; _w5=2
+    _rrd_aliases="$(blockdb_list "$_devdb" | awk '
+        BEGIN { RS=""; FS="\n" }
         {
-            alias=$1; ip=$2; user=($3==""?"?":$3); port=($4==""?"22":$4)
-            os="-"
-            if(hdb!="" && (getline ln < "/dev/null") >= 0) {
-                while((getline ln < hdb)>0) {
-                    split(ln,a,"|"); if(a[1]==ip){os=a[2];break}
-                }
-                close(hdb)
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
             }
-            rows[NR]=alias "|" ip "|" port "|" user "|" os
-            if(length(alias)>w1) w1=length(alias)
-            if(length(ip)>w2)    w2=length(ip)
-            if(length(port)>w3)  w3=length(port)
-            if(length(user)>w4)  w4=length(user)
-            if(length(os)>w5)    w5=length(os)
-            n=NR
         }
-        END {
-            w1=(w1>5?w1:5); w2=(w2>2?w2:2); w3=(w3>4?w3:4); w4=(w4>4?w4:4); w5=(w5>2?w5:2)
-            print w1 " " w2 " " w3 " " w4 " " w5
-            for(i=1;i<=n;i++) if(i in rows) print rows[i]
-        }
-    ' "$_devdb" > "$_rows_tmp"
+    ')"
+    printf '%s\n' "$_rrd_aliases" | while IFS= read -r _rrd_alias; do
+        [ -n "$_rrd_alias" ] || continue
+        _rrd_blk="$(blockdb_get "$_devdb" alias "$_rrd_alias")"
+        [ -n "$_rrd_blk" ] || continue
+        _rrd_ip="$(blockdb_field "$_rrd_blk" ip)"
+        _rrd_user="$(blockdb_field "$_rrd_blk" user)"; _rrd_user="${_rrd_user:-?}"
+        _rrd_port="$(blockdb_field "$_rrd_blk" port)"; _rrd_port="${_rrd_port:-22}"
+        _rrd_os="-"
+        if [ -f "$_hosts_db" ]; then
+            _rrd_os_line="$(awk -F'|' -v ip="$_rrd_ip" '$1==ip{print $2; exit}' "$_hosts_db" 2>/dev/null)"
+            [ -n "$_rrd_os_line" ] && _rrd_os="$_rrd_os_line"
+        fi
+        printf '%s|%s|%s|%s|%s\n' "$_rrd_alias" "$_rrd_ip" "$_rrd_port" "$_rrd_user" "$_rrd_os" >> "$_rows_tmp"
+    done
 
-    read -r _w1 _w2 _w3 _w4 _w5 < "$_rows_tmp"
+    [ -s "$_rows_tmp" ] || { rm -f "$_rows_tmp"; return 0; }
+
+    while IFS='|' read -r _a _i _p _u _o; do
+        [ -n "$_a" ] || continue
+        [ "${#_a}" -gt "$_w1" ] && _w1="${#_a}"
+        [ "${#_i}" -gt "$_w2" ] && _w2="${#_i}"
+        [ "${#_p}" -gt "$_w3" ] && _w3="${#_p}"
+        [ "${#_u}" -gt "$_w4" ] && _w4="${#_u}"
+        [ "${#_o}" -gt "$_w5" ] && _w5="${#_o}"
+    done < "$_rows_tmp"
+
     _d1="$(printf '%*s' "$_w1" | tr ' ' '-')"
     _d2="$(printf '%*s' "$_w2" | tr ' ' '-')"
     _d3="$(printf '%*s' "$_w3" | tr ' ' '-')"
@@ -117,7 +125,7 @@ render_registered_devices() {
         "ALIAS" "IP" "PORT" "USER" "OS"
     printf "  %s  %s  %s  %s  %s\n" "$_d1" "$_d2" "$_d3" "$_d4" "$_d5"
 
-    tail -n +2 "$_rows_tmp" | while IFS='|' read -r _a _i _p _u _o; do
+    while IFS='|' read -r _a _i _p _u _o; do
         [ -n "$_a" ] || continue
         _c_os="${_C_RESET}"
         case "$_o" in
@@ -127,7 +135,7 @@ render_registered_devices() {
         esac
         printf "  ${_C_GREEN}%-${_w1}s${_C_RESET}  ${_C_CYAN}%-${_w2}s${_C_RESET}  ${_C_YELLOW}%-${_w3}s${_C_RESET}  %-${_w4}s  ${_c_os}%s${_C_RESET}\n" \
             "$_a" "$_i" "$_p" "$_u" "$_o"
-    done
+    done < "$_rows_tmp"
     rm -f "$_rows_tmp"
     printf '\n'
 
@@ -145,12 +153,20 @@ render_registered_devices() {
 
 render_connect() {
     _devdb="$BASE/state/devices.db"
-    [ -f "$_devdb" ] || return 0
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{found=1;exit}END{exit !found}' \
-        "$_devdb" 2>/dev/null || return 0
+    [ -f "$_devdb" ] && [ -s "$_devdb" ] || return 0
 
-    _ex="$(awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1;exit}' \
-        "$_devdb" 2>/dev/null)"
+    _rc_aliases="$(blockdb_list "$_devdb" | awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); exit }
+            }
+        }
+    ')"
+    _ex="$(printf '%s\n' "$_rc_aliases" | head -1)"
     _ex="${_ex:-<alias>}"
 
     printf "${_C_BOLD}${_C_CYAN}  CONNECT${_C_RESET}  ${_C_DIM}(replace %s with any alias)${_C_RESET}\n\n" "$_ex"
@@ -177,11 +193,8 @@ prompt_new_hosts() {
     _new_tmp="$(mktemp "${TMPDIR:-/tmp}/noemap.XXXXXX")"
     while IFS='|' read -r _ip _type _ttl _ssh_port _all_ports; do
         [ -n "$_ip" ] || continue
-        _found="$(awk -F'|' -v ip="$_ip" '
-            /^[[:space:]]*$/{ next } /^#/{ next }
-            $2==ip{ print 1; exit }
-        ' "$_devdb" 2>/dev/null)"
-        [ -z "$_found" ] && printf '%s|%s|%s\n' \
+        _found_blk="$(blockdb_get "$_devdb" ip "$_ip")"
+        [ -z "$_found_blk" ] && printf '%s|%s|%s\n' \
             "$_ip" "$_type" "${_ssh_port:-22}" >> "$_new_tmp"
     done < "$_hosts_db"
 
@@ -200,10 +213,7 @@ prompt_new_hosts() {
             *)           _base_alias="db" ;;
         esac
         _n=0; _default_alias="$_base_alias"
-        while awk -F'|' -v a="$_default_alias" '
-            /^[[:space:]]*$/{next}/^#/{next}
-            $1==a{found=1;exit}END{exit !found}
-        ' "$_devdb" 2>/dev/null; do
+        while [ -n "$(blockdb_get "$_devdb" alias "$_default_alias")" ]; do
             _n=$(( _n + 1 )); _default_alias="${_base_alias%b}${_n}"
         done
 
@@ -226,21 +236,18 @@ prompt_new_hosts() {
             fi
         done
 
-        _alias_cur_ip="$(awk -F'|' -v a="$_alias" '
-            /^[[:space:]]*$/{ next } /^#/{ next }
-            $1==a{ print $2; exit }
-        ' "$_devdb" 2>/dev/null)"
+        _alias_cur_blk="$(blockdb_get "$_devdb" alias "$_alias")"
+        _alias_cur_ip="$([ -n "$_alias_cur_blk" ] && blockdb_field "$_alias_cur_blk" ip || printf '')"
 
         if [ -n "$_alias_cur_ip" ] && [ "$_alias_cur_ip" != "$_ip" ]; then
             printf "  ${_C_CYAN}[i]${_C_RESET} \"%s\" existed (%s) -- IP updated to %s\n" \
                 "$_alias" "$_alias_cur_ip" "$_ip"
             known_hosts_remove_ip "$_alias_cur_ip"
-            _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-            awk -F'|' -v a="$_alias" -v ni="$_ip" -v np="${_ssh_port:-22}" '
-                /^[[:space:]]*$/{print;next}/^#/{print;next}
-                $1==a{ printf "%s|%s|%s|%s|%s\n",$1,ni,$3,np,$5; next }{ print }
-            ' "$_devdb" > "$_tmp_db"
-            mv -f "$_tmp_db" "$_devdb"
+            _cur_user="$(blockdb_field "$_alias_cur_blk" user)"
+            _cur_hk="$(blockdb_field "$_alias_cur_blk" hostkey)"
+            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+                "$_alias" "$_ip" "${_cur_user:-}" "${_ssh_port:-22}" "${_cur_hk:-}")"
+            blockdb_upsert "$_devdb" alias "$_alias" "$_new_blk"
             printf '\n'; continue
         fi
 
@@ -259,19 +266,11 @@ prompt_new_hosts() {
 
         known_hosts_remove_ip "$_ip"
         _new_host_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
-        _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-        { cat "$_devdb"
-          printf '%s|%s|%s|%s|%s\n' "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}"
-        } > "$_tmp_db"
-
-        if awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF<2{exit 1}' "$_tmp_db"; then
-            mv -f "$_tmp_db" "$_devdb"
-            printf "  ${_C_GREEN}[OK]${_C_RESET} registered \"%s\" -> %s  user=%s  port=%s\n\n" \
-                "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}"
-        else
-            rm -f "$_tmp_db"
-            printf "  ${_C_YELLOW}[!]${_C_RESET} validation failed for \"%s\" -- skipped\n\n" "$_alias"
-        fi
+        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+            "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}")"
+        blockdb_upsert "$_devdb" alias "$_alias" "$_new_blk"
+        printf "  ${_C_GREEN}[OK]${_C_RESET} registered \"%s\" -> %s  user=%s  port=%s\n\n" \
+            "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}"
     done < "$_new_tmp"
     rm -f "$_new_tmp"
 }

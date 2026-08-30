@@ -253,11 +253,17 @@ known_hosts_prune() {
     [ -f "$KNOWN_HOSTS" ] || return 0
     [ -f "$_db" ]         || return 0
 
-    _live_ips="$(awk -F'|' '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        NF >= 2          { print $2 }
-    ' "$_db" 2>/dev/null)"
+    _live_ips="$(blockdb_list "$_db" | awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "ip") { print substr($i, colon + 2); break }
+            }
+        }
+    ')"
 
     _kh_tmp="${KNOWN_HOSTS}.prune_tmp.$$"
     : > "$_kh_tmp"

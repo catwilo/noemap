@@ -276,37 +276,23 @@ _update_registered_hosts() {
     while IFS='|' read -r _ip _type _ttl _ssh_port _all_ports; do
         [ -n "$_ip" ] || continue
 
-        _existing="$(awk -F'|' -v ip="$_ip" '
-            /^[[:space:]]*$/ { next }
-            /^#/             { next }
-            $2 == ip         { print $1; exit }
-        ' "$DEVICES_DB" 2>/dev/null)"
+        _existing_blk="$(blockdb_get "$DEVICES_DB" ip "$_ip")"
+        _existing="$([ -n "$_existing_blk" ] && blockdb_field "$_existing_blk" alias || printf '')"
 
         if [ -z "$_existing" ]; then
-            # No row registered under this IP. Before treating it as a brand
-            # new host, check if it is a KNOWN alias whose registered IP is
-            # now unreachable (candidate list built by _validate_registered_hosts
-            # into _STALE_ALIAS_CANDIDATES this same run) -- same host, new IP,
-            # detected via SSH host key fingerprint (miko-task#294 fix).
             _hk_new="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}")"
             if [ -n "$_hk_new" ] && [ -n "${_STALE_ALIAS_CANDIDATES:-}" ]; then
                 for _cand_alias in $_STALE_ALIAS_CANDIDATES; do
                     [ "$_cand_alias" = "$(node_alias 2>/dev/null)" ] && continue
-                    _cand_hk="$(awk -F'|' -v a="$_cand_alias" '
-                        /^[[:space:]]*$/ { next }
-                        /^#/             { next }
-                        $1 == a          { print $5; exit }
-                    ' "$DEVICES_DB" 2>/dev/null)"
+                    _cand_blk="$(blockdb_get "$DEVICES_DB" alias "$_cand_alias")"
+                    [ -n "$_cand_blk" ] || continue
+                    _cand_hk="$(blockdb_field "$_cand_blk" hostkey)"
                     [ -n "$_cand_hk" ] || continue
                     if [ "$_cand_hk" = "$_hk_new" ]; then
-                        _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-                        awk -F'|' -v a="$_cand_alias" -v nip="$_ip" -v np="${_ssh_port:-22}" '
-                            /^[[:space:]]*$/ { print; next }
-                            /^#/             { print; next }
-                            $1 == a          { printf "%s|%s|%s|%s|%s\n",$1,nip,$3,np,$5; next }
-                            { print }
-                        ' "$DEVICES_DB" > "$_tmp_db"
-                        mv -f "$_tmp_db" "$DEVICES_DB"
+                        _cand_user="$(blockdb_field "$_cand_blk" user)"
+                        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+                            "$_cand_alias" "$_ip" "$_cand_user" "${_ssh_port:-22}" "$_cand_hk")"
+                        blockdb_upsert "$DEVICES_DB" alias "$_cand_alias" "$_new_blk"
                         log OK "alias '$_cand_alias' moved to new IP $_ip (matched via SSH host key, old IP unreachable)"
                         _existing="$_cand_alias"
                         break
@@ -317,22 +303,16 @@ _update_registered_hosts() {
 
         [ -n "$_existing" ] || continue   # genuinely new host — handled by prompt_new_hosts
 
-        _cur_port="$(awk -F'|' -v ip="$_ip" '
-            /^[[:space:]]*$/ { next }
-            /^#/             { next }
-            $2 == ip         { print $4; exit }
-        ' "$DEVICES_DB" 2>/dev/null)"
+        _existing_blk="$(blockdb_get "$DEVICES_DB" alias "$_existing")"
+        _cur_port="$(blockdb_field "$_existing_blk" port)"
         _cur_port="${_cur_port:-22}"
+        _cur_user="$(blockdb_field "$_existing_blk" user)"
+        _cur_hk="$(blockdb_field "$_existing_blk" hostkey)"
 
         if [ -n "$_ssh_port" ] && [ "$_ssh_port" != "$_cur_port" ]; then
-            _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-            awk -F'|' -v ip="$_ip" -v np="$_ssh_port" '
-                /^[[:space:]]*$/ { print; next }
-                /^#/             { print; next }
-                $2 == ip         { printf "%s|%s|%s|%s|%s\n",$1,$2,$3,np,$5; next }
-                { print }
-            ' "$DEVICES_DB" > "$_tmp_db"
-            mv -f "$_tmp_db" "$DEVICES_DB"
+            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+                "$_existing" "$_ip" "$_cur_user" "$_ssh_port" "${_cur_hk:-}")"
+            blockdb_upsert "$DEVICES_DB" alias "$_existing" "$_new_blk"
             log INFO "updated SSH port for '$_existing': $_cur_port → $_ssh_port"
         else
             log INFO "host $_ip already registered as '$_existing'"
@@ -341,22 +321,15 @@ _update_registered_hosts() {
         # Backfill: capture hostkey for this alias if it doesn't have one yet
         # (miko-task#294 -- progressive curation so future IP-change detection
         # has something to compare against). No-op once the field is filled.
-        _cur_hk="$(awk -F'|' -v ip="$_ip" '
-            /^[[:space:]]*$/ { next }
-            /^#/             { next }
-            $2 == ip         { print $5; exit }
-        ' "$DEVICES_DB" 2>/dev/null)"
         if [ -z "$_cur_hk" ]; then
             _new_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}")"
             if [ -n "$_new_hk" ]; then
-                _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-                awk -F'|' -v ip="$_ip" -v hk="$_new_hk" '
-                    /^[[:space:]]*$/ { print; next }
-                    /^#/             { print; next }
-                    $2 == ip         { printf "%s|%s|%s|%s|%s\n",$1,$2,$3,$4,hk; next }
-                    { print }
-                ' "$DEVICES_DB" > "$_tmp_db"
-                mv -f "$_tmp_db" "$DEVICES_DB"
+                _refresh_blk="$(blockdb_get "$DEVICES_DB" alias "$_existing")"
+                _refresh_port="$(blockdb_field "$_refresh_blk" port)"
+                _refresh_user="$(blockdb_field "$_refresh_blk" user)"
+                _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+                    "$_existing" "$_ip" "$_refresh_user" "${_refresh_port:-22}" "$_new_hk")"
+                blockdb_upsert "$DEVICES_DB" alias "$_existing" "$_new_blk"
                 log INFO "backfilled SSH host key fingerprint for '$_existing'"
             fi
         fi
@@ -369,16 +342,12 @@ _update_registered_hosts() {
 # ---------------------------------------------------------------------------
 new_hosts_list() {
     _hdb="$HOSTS_DB"
-    _ddb="$DEVICES_DB"
+
     [ -f "$_hdb" ] && [ -s "$_hdb" ] || return 0
 
     while IFS='|' read -r _ip _type _ttl _ssh_port _all_ports; do
         [ -n "$_ip" ] || continue
-        _found="$(awk -F'|' -v ip="$_ip" '
-            /^[[:space:]]*$/ { next }
-            /^#/             { next }
-            $2 == ip         { print 1; exit }
-        ' "$_ddb" 2>/dev/null)"
-        [ -z "$_found" ] && printf '%s|%s|%s\n' "$_ip" "$_type" "${_ssh_port:-22}"
+        _found_blk="$(blockdb_get "$DEVICES_DB" ip "$_ip")"
+        [ -z "$_found_blk" ] && printf '%s|%s|%s\n' "$_ip" "$_type" "${_ssh_port:-22}"
     done < "$_hdb"
 }

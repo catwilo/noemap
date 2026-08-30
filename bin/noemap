@@ -140,12 +140,12 @@ _do_ssh_setup() {
     _db="$BASE/state/devices.db"
     [ -f "$_db" ] || { log ERROR "devices database missing: $_db"; exit 1; }
 
-    _line="$(awk -F'|' -v a="$_alias" '$1 == a { print; exit }' "$_db" 2>/dev/null || true)"
-    [ -n "$_line" ] || { log ERROR "unknown device alias: '$_alias'"; exit 1; }
+    _blk="$(blockdb_get "$_db" alias "$_alias")"
+    [ -n "$_blk" ] || { log ERROR "unknown device alias: '$_alias'"; exit 1; }
 
-    _ip="$(printf '%s\n' "$_line" | cut -d'|' -f2)"
-    _user="$(printf '%s\n' "$_line" | cut -d'|' -f3)"
-    _port="$(printf '%s\n' "$_line" | cut -d'|' -f4)"
+    _ip="$(blockdb_field "$_blk" ip)"
+    _user="$(blockdb_field "$_blk" user)"
+    _port="$(blockdb_field "$_blk" port)"
     [ -n "$_port" ] || _port=22
     [ -n "$_user" ] || { log ERROR "no user set for '$_alias' — run nssh once to set it"; exit 1; }
 

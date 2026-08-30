@@ -93,8 +93,8 @@ _port_for() {
     case "$1" in
         *:*)
             _p_alias="${1%%:*}"
-            _p_line="$(awk -F'|' -v a="$_p_alias" '$1 == a { print; exit }' "$DB" 2>/dev/null || true)"
-            [ -n "$_p_line" ] && printf '%s\n' "$_p_line" | cut -d'|' -f4
+            _p_blk="$(blockdb_get "$DB" alias "$_p_alias")"
+            [ -n "$_p_blk" ] && blockdb_field "$_p_blk" port
             ;;
     esac
 }
