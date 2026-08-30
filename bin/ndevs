@@ -343,58 +343,6 @@ _cmd_push_vpn() {
     done
 }
 
-# _distribute_registry -- push registry.db to every known node via nssh,
-# skipping self. Called after every registry change so identity is never stale.
-# Fix noemap#407: the per-node loop runs in a pipe (subshell), so failures
-# cannot set a variable visible to this function directly. Failures are
-# counted in a temp file instead, read back after the pipe completes, so
-# the function returns a real, non-zero status when at least one reachable
-# node failed to receive the registry (unreachable nodes are skipped, not
-# counted as failures).
-_distribute_registry() {
-    [ -f "$REGISTRY_DB" ] || return 0
-    has_cmd nssh || { log WARN "nssh not found -- registry not distributed"; return 0; }
-    _remote_reg="$HOME/.local/share/noemap/state/registry.db"
-    [ -f "$DB" ] || return 0
-    # Skip self by local IP (MY_IP if exported, else any 127.* / own row).
-    _my_alias="$(node_alias 2>/dev/null || printf '')"
-    _dr_fail_count="$(mktemp "${TMPDIR:-/tmp}/distribute-registry-fails.XXXXXX")"
-    _dr_aliases="$(awk '
-        BEGIN { RS=""; FS="\n" }
-        {
-            for (i = 1; i <= NF; i++) {
-                colon = index($i, ":")
-                if (colon == 0) continue
-                fk = substr($i, 1, colon - 1)
-                if (fk == "alias") { print substr($i, colon + 2); break }
-            }
-        }
-    ' "$DB" 2>/dev/null)"
-    printf '%s\n' "$_dr_aliases" | while IFS= read -r _na; do
-        [ -n "$_na" ] || continue
-        [ "$_na" = "$_my_alias" ] && continue
-        _nblk="$(blockdb_get "$DB" alias "$_na")"
-        [ -n "$_nblk" ] || continue
-        _nip="$(blockdb_field "$_nblk" ip)"
-        _nport="$(blockdb_field "$_nblk" port)"
-        [ -n "$_nport" ] || _nport=22
-        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_nip"; then continue; fi
-        case "$_nip" in 127.*|localhost) continue ;; esac
-        if ! reachable_ssh "$_nip" "$_nport"; then
-            log WARN "registry -> $_na skipped (unreachable: $_nip:$_nport)"
-            continue
-        fi
-        if nssh "$_na" "mkdir -p ~/.local/share/noemap/state && cat > $_remote_reg" < "$REGISTRY_DB" >/dev/null 2>&1; then
-            log OK "registry -> $_na"
-        else
-            log WARN "registry to $_na failed (node down?) -- skipped"
-            printf 'x' >> "$_dr_fail_count"
-        fi
-    done
-    _dr_fails="$(wc -c < "$_dr_fail_count" 2>/dev/null || printf 0)"
-    rm -f "$_dr_fail_count"
-    [ "${_dr_fails:-0}" -eq 0 ]
-}
 
 # _registry_default_dir -- working tree of the git-backed registry repo.
 _registry_default_dir() { printf '%s\n' "$HOME/.noemap-registry"; }

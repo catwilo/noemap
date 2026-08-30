@@ -254,6 +254,8 @@ node_alias_set() {
             "$_nas_dir" "$_nas_branch" >&2
         return 1
     }
+
+    _distribute_registry
 }
 
 # registry_row_by_alias ALIAS -- full registry.db block for the given alias
@@ -266,4 +268,69 @@ registry_row_by_alias() {
     _identity_registry_warn_once
     [ -f "$REGISTRY_DB" ] || return 0
     blockdb_get "$REGISTRY_DB" alias "$_rrba_alias"
+}
+
+# _distribute_registry -- ensure every known node's ~/.noemap-registry clone
+# is up to date via nssh + git pull, skipping self. Called after every
+# registry change so identity is never stale. Shared by node_alias_set()
+# here and ndevs --node-add/--registry-set (bin/ndevs) -- single source of
+# truth, moved here from bin/ndevs (ut#443 follow-up, noemap#448).
+# REDESIGN (noemap#447/#448 investigation): the previous implementation
+# nssh-copied a raw file to ~/.local/share/noemap/state/registry.db, which
+# is NOT the path ndevs/identity.sh actually read (REGISTRY_DB default is
+# ~/.noemap-registry/registry.db, the git-backed repo). That left remote
+# nodes' real registry stuck on old commits (old pipe format, stale
+# aliases), even though the copied file looked fine. Correct mechanism:
+# have each remote node pull its own git clone, then verify convergence by
+# comparing HEAD commit hashes -- printing an explicit MATCH/DIFF per node
+# instead of a bare OK that hides a stale clone.
+_distribute_registry() {
+    _dr_devdb="$(_identity_statedir)/devices.db"
+    [ -f "$REGISTRY_DB" ] || return 0
+    has_cmd nssh || { log WARN "nssh not found -- registry not distributed"; return 0; }
+    [ -f "$_dr_devdb" ] || return 0
+    _dr_local_head="$(cd "$(dirname "$REGISTRY_DB")" 2>/dev/null && git rev-parse HEAD 2>/dev/null)"
+    _my_alias="$(node_alias 2>/dev/null || printf '')"
+    _dr_fail_count="$(mktemp "${TMPDIR:-/tmp}/distribute-registry-fails.XXXXXX")"
+    _dr_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$_dr_devdb" 2>/dev/null)"
+    printf '%s\n' "$_dr_aliases" | while IFS= read -r _na; do
+        [ -n "$_na" ] || continue
+        [ "$_na" = "$_my_alias" ] && continue
+        _nblk="$(blockdb_get "$_dr_devdb" alias "$_na")"
+        [ -n "$_nblk" ] || continue
+        _nip="$(blockdb_field "$_nblk" ip)"
+        _nport="$(blockdb_field "$_nblk" port)"
+        [ -n "$_nport" ] || _nport=22
+        if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_nip"; then continue; fi
+        case "$_nip" in 127.*|localhost) continue ;; esac
+        if ! reachable_ssh "$_nip" "$_nport"; then
+            log WARN "registry -> $_na skipped (unreachable: $_nip:$_nport)"
+            continue
+        fi
+        _dr_remote_head="$(nssh "$_na" "cd ~/.noemap-registry 2>/dev/null && git pull --rebase origin main >/dev/null 2>&1 && git rev-parse HEAD 2>/dev/null" 2>/dev/null)"
+        if [ -z "$_dr_remote_head" ]; then
+            log WARN "registry pull on $_na failed or repo not cloned -- skipped"
+            printf 'x' >> "$_dr_fail_count"
+            continue
+        fi
+        if [ -n "$_dr_local_head" ] && [ "$_dr_remote_head" = "$_dr_local_head" ]; then
+            log OK "registry synced -> $_na (MATCH $_dr_remote_head)"
+        else
+            log WARN "registry synced -> $_na (DIFF: local=${_dr_local_head:-?} remote=$_dr_remote_head)"
+            printf 'x' >> "$_dr_fail_count"
+        fi
+    done
+    _dr_fails="$(wc -c < "$_dr_fail_count" 2>/dev/null || printf 0)"
+    rm -f "$_dr_fail_count"
+    [ "${_dr_fails:-0}" -eq 0 ]
 }
