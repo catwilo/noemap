@@ -50,10 +50,6 @@ _nmap_ssh_probe() {
 # _nc_ssh_probe ip — checks if any SSH port is open via nc.
 # Prints the first open port number, or nothing.
 # ---------------------------------------------------------------------------
-# Connect-timeout flags for nc, resolved once and cached in _NC_CT_FLAGS.
-# BSD/macOS nc honours -G (connect timeout) for SYN to a dead host; -w alone
-# is ignored there and hangs until the kernel TCP timeout. Linux nc has no -G
-# and uses -w. Probe the actual binary instead of assuming.
 _nc_connect_flags() {
     if [ -n "${_NC_CT_FLAGS+x}" ]; then
         printf '%s' "$_NC_CT_FLAGS"
@@ -105,13 +101,28 @@ _validate_registered_hosts() {
 
     log INFO "validating registered hosts..."
 
-    # Collect all registered IPs into a temp list
+    _reg_aliases="$(session_tmp reg_aliases)"
+    awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DEVICES_DB" > "$_reg_aliases" 2>/dev/null
+
     _reg_tmp="$(session_tmp reg_ips)"
-    awk -F'|' '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        NF >= 2          { print $2 }
-    ' "$DEVICES_DB" 2>/dev/null > "$_reg_tmp"
+    : > "$_reg_tmp"
+    while IFS= read -r _ralias; do
+        [ -n "$_ralias" ] || continue
+        _rblk="$(blockdb_get "$DEVICES_DB" alias "$_ralias")"
+        [ -n "$_rblk" ] || continue
+        _rip="$(blockdb_field "$_rblk" ip)"
+        [ -n "$_rip" ] && printf '%s\n' "$_rip" >> "$_reg_tmp"
+    done < "$_reg_aliases"
 
     [ -s "$_reg_tmp" ] || return 0
 
@@ -121,8 +132,6 @@ _validate_registered_hosts() {
         [ -n "$_rip" ] || continue
         [ "$_rip" = "$MY_IP" ] && continue   # never remove self
 
-        # Tailscale IPs (100.*) are persistent and not ICMP-reachable from
-        # Android without root -- accept them directly, never ping or purge.
         case "$_rip" in
             100.*)
                 log INFO "registered host $_rip: tailscale ip -- accepted (no ping)"
@@ -135,18 +144,8 @@ _validate_registered_hosts() {
             log INFO "registered host $_rip: online — accepted"
             printf '%s\n' "$_rip" >> "$_vout"
         else
-            # Before purging: this alias is a STALE-IP CANDIDATE this run --
-            # if a newly discovered host matches its SSH host key fingerprint,
-            # fingerprint.sh's _update_registered_hosts will move it to the
-            # new IP instead of both purging it here AND creating a duplicate
-            # "new host" entry (miko-task#294 fix). Only purge if it is not
-            # rescued by that hostkey match (checked again after the full
-            # discovery pass, in discover_hosts).
-            _stale_alias="$(awk -F'|' -v ip="$_rip" '
-                /^[[:space:]]*$/ { next }
-                /^#/             { next }
-                $2 == ip         { print $1; exit }
-            ' "$DEVICES_DB" 2>/dev/null)"
+            _stale_blk="$(blockdb_get "$DEVICES_DB" ip "$_rip")"
+            _stale_alias="$([ -n "$_stale_blk" ] && blockdb_field "$_stale_blk" alias || printf '')"
             if [ -n "$_stale_alias" ]; then
                 _STALE_ALIAS_CANDIDATES="$_STALE_ALIAS_CANDIDATES $_stale_alias"
                 log WARN "registered host $_rip (alias '$_stale_alias'): no response -- candidate for IP-change detection this run (not purged yet)"
@@ -169,20 +168,10 @@ _validate_registered_hosts() {
 _remove_offline_host() {
     _off_ip="$1"
 
-    # Find alias for logging
-    _off_alias="$(awk -F'|' -v ip="$_off_ip" '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        $2 == ip         { print $1; exit }
-    ' "$DEVICES_DB" 2>/dev/null)"
+    _off_blk="$(blockdb_get "$DEVICES_DB" ip "$_off_ip")"
+    _off_alias="$([ -n "$_off_blk" ] && blockdb_field "$_off_blk" alias || printf '')"
 
-    _off_tmp="$(mktemp "${TMPDIR:-/tmp}/noemap.XXXXXX")"
-    awk -F'|' -v ip="$_off_ip" '
-        /^[[:space:]]*$/ { print; next }
-        /^#/             { print; next }
-        $2 == ip         { next }
-        { print }
-    ' "$DEVICES_DB" > "$_off_tmp" && mv -f "$_off_tmp" "$DEVICES_DB" || rm -f "$_off_tmp"
+    [ -n "$_off_alias" ] && blockdb_remove "$DEVICES_DB" alias "$_off_alias"
 
     known_hosts_remove_ip "$_off_ip"
 
@@ -199,11 +188,6 @@ _remove_offline_host() {
 # alias and the current user; port 8022 (Termux/Android sshd default). No-op
 # if MY_IP is already present. Safe to call repeatedly (idempotent).
 # ---------------------------------------------------------------------------
-# _registry_pull_latest -- best-effort git pull of the git-backed registry
-# repo before reading identity, so a node picks up aliases set by other
-# nodes without needing them reachable directly (noemap#51). Silent no-op
-# if the repo is not cloned, has no upstream, or the pull fails (offline) --
-# node_registry_row() falls back to whatever is on disk either way.
 _registry_pull_latest() {
     _rpl_dir="$HOME/.noemap-registry"
     [ -d "$_rpl_dir/.git" ] || return 0
@@ -216,18 +200,15 @@ _self_register() {
 
     _registry_pull_latest
 
-    # Resolve canonical identity. Order: master registry (source of truth,
-    # requires REGISTRY_DB reachable/cloned) -> local node-config cache
-    # (offline-first fallback, miko-task noemap#295) -> nothing.
     _self_alias=""
     _self_user=""
     _self_port=""
     if command -v node_registry_row >/dev/null 2>&1; then
         _self_row="$(node_registry_row 2>/dev/null)"
         if [ -n "$_self_row" ]; then
-            _self_alias="$(printf '%s\n' "$_self_row" | cut -d'|' -f2)"
-            _self_user="$(printf '%s\n'  "$_self_row" | cut -d'|' -f3)"
-            _self_port="$(printf '%s\n'  "$_self_row" | cut -d'|' -f4)"
+            _self_alias="$(blockdb_field "$_self_row" alias)"
+            _self_user="$(blockdb_field "$_self_row" user)"
+            _self_port="$(blockdb_field "$_self_row" port)"
         fi
     fi
 
@@ -249,26 +230,25 @@ _self_register() {
     _self_user="${_self_user:-$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')}"
     _self_port="${_self_port:-8022}"
 
-    # Update existing self row (by alias) in place, else append. Keeps the
-    # canonical alias bound to the current MY_IP every run.
-    # Dedup by MY_IP (the node's real LAN identity): drop any existing row with
-    # this IP (e.g. stale 'localhost') AND any row with the canonical alias,
-    # then append the single correct row.
-    # Preserve existing hostkey fingerprint (col 5) if this alias or IP
-    # already had one recorded, so re-registering every run doesn't wipe it
-    # (miko-task#294 fix depends on this field surviving across runs).
-    _self_prev_hk="$(awk -F'|' -v a="$_self_alias" -v ip="$MY_IP" '
-        /^[[:space:]]*$/{next}/^#/{next}
-        ($1==a || $2==ip) && $5!="" { print $5; exit }
-    ' "$DEVICES_DB" 2>/dev/null)"
+    _self_prev_hk=""
+    _self_blk_by_alias="$(blockdb_get "$DEVICES_DB" alias "$_self_alias")"
+    if [ -n "$_self_blk_by_alias" ]; then
+        _self_prev_hk="$(blockdb_field "$_self_blk_by_alias" hostkey)"
+    fi
+    _self_blk_by_ip="$(blockdb_get "$DEVICES_DB" ip "$MY_IP")"
+    if [ -z "$_self_prev_hk" ] && [ -n "$_self_blk_by_ip" ]; then
+        _self_prev_hk="$(blockdb_field "$_self_blk_by_ip" hostkey)"
+    fi
 
-    _sr_tmp="$(mktemp "${TMPDIR:-/tmp}/selfreg.XXXXXX")"
-    awk -F'|' -v a="$_self_alias" -v ip="$MY_IP" '
-        /^[[:space:]]*$/{print;next}/^#/{print;next}
-        $1==a{next} $2==ip{next} {print}
-    ' "$DEVICES_DB" > "$_sr_tmp" 2>/dev/null || cp "$DEVICES_DB" "$_sr_tmp"
-    printf '%s|%s|%s|%s|%s\n' "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}" >> "$_sr_tmp"
-    mv -f "$_sr_tmp" "$DEVICES_DB"
+    # Dedup by IP first (covers stale alias pointing at same IP under a
+    # different name), then upsert by alias with the fresh block.
+    if [ -n "$_self_blk_by_ip" ] && [ "$(blockdb_field "$_self_blk_by_ip" alias)" != "$_self_alias" ]; then
+        blockdb_remove "$DEVICES_DB" ip "$MY_IP"
+    fi
+
+    _self_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+        "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}")"
+    blockdb_upsert "$DEVICES_DB" alias "$_self_alias" "$_self_block"
     log OK "self-registered $_self_alias ($MY_IP) in devices.db"
     if command -v node_alias_set >/dev/null 2>&1; then
         node_alias_set "$_self_alias" "$_self_user" "$_self_port" || \
@@ -294,7 +274,29 @@ sync_devices_to_nodes() {
     has_cmd nssh || { log WARN "nssh not found -- skipping device sync"; return 0; }
 
     _remote_db="$HOME/.local/share/noemap/state/devices.db"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{print $1"|"$2}' "$DEVICES_DB" | \
+    _sdn_aliases="$(session_tmp sdn_aliases)"
+    awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DEVICES_DB" > "$_sdn_aliases" 2>/dev/null
+
+    _sdn_tmp="$(session_tmp sdn_pairs)"
+    : > "$_sdn_tmp"
+    while IFS= read -r _sdn_alias; do
+        [ -n "$_sdn_alias" ] || continue
+        _sdn_blk="$(blockdb_get "$DEVICES_DB" alias "$_sdn_alias")"
+        [ -n "$_sdn_blk" ] || continue
+        _sdn_ip="$(blockdb_field "$_sdn_blk" ip)"
+        [ -n "$_sdn_ip" ] && printf '%s|%s\n' "$_sdn_alias" "$_sdn_ip" >> "$_sdn_tmp"
+    done < "$_sdn_aliases"
+
     while IFS='|' read -r _sa _sip <&3; do
         [ -n "$_sa" ] || continue
         [ "$_sip" = "${MY_IP:-}" ] && continue   # never push to self
@@ -304,7 +306,7 @@ sync_devices_to_nodes() {
         else
             log WARN "sync to $_sa failed (node down?) -- skipped"
         fi
-    done 3<&0
+    done 3< "$_sdn_tmp"
 }
 
 # ---------------------------------------------------------------------------
@@ -317,11 +319,9 @@ sync_devices_to_nodes() {
 _purge_unrescued_stale_aliases() {
     [ -n "${_STALE_ALIAS_CANDIDATES:-}" ] || return 0
     for _cand in $_STALE_ALIAS_CANDIDATES; do
-        _cand_ip="$(awk -F'|' -v a="$_cand" '
-            /^[[:space:]]*$/ { next }
-            /^#/             { next }
-            $1 == a          { print $2; exit }
-        ' "$DEVICES_DB" 2>/dev/null)"
+        _cand_blk="$(blockdb_get "$DEVICES_DB" alias "$_cand")"
+        [ -n "$_cand_blk" ] || continue
+        _cand_ip="$(blockdb_field "$_cand_blk" ip)"
         [ -n "$_cand_ip" ] || continue
         if _ping_host "$_cand_ip"; then
             continue  # rescued in place or still reachable somehow -- leave it
@@ -342,18 +342,9 @@ discover_hosts() {
     _nmap_port_out="$(session_tmp nmap_ports)"
     _validated_tmp="$(session_tmp validated_hosts)"
 
-    # -------------------------------------------------------------------
-    # Phase 0: validate already-registered hosts via ping
-    # Hosts that respond are accepted immediately; non-responding hosts
-    # are purged from devices.db and known_hosts.
-    # -------------------------------------------------------------------
     _SKIP_IPS=""
     _validate_registered_hosts "$_validated_tmp"
 
-    # -------------------------------------------------------------------
-    # Phase 1: discover new hosts — ARP ping (or TCP-SYN fallback).
-    # Exclude already-validated IPs to avoid redundant work.
-    # -------------------------------------------------------------------
     if has_cmd nmap; then
         nmap -sn -PR -n --host-timeout 3s "$SUBNET" 2>/dev/null \
             | awk '/Nmap scan report/ {ip=$NF} /Host is up/ {print ip}' \
@@ -384,7 +375,6 @@ discover_hosts() {
         fi
     fi
 
-    # Remove self and already-validated IPs from the discovery list
     if [ -s "$_arp_tmp" ]; then
         _arp_filtered="$(session_tmp arp_filtered)"
         : > "$_arp_filtered"
@@ -392,7 +382,6 @@ discover_hosts() {
             [ -n "$_candidate" ]      || continue
             [ "$_candidate" = "$MY_IP" ] && continue
 
-            # Skip if already validated via Phase 0
             _skip=0
             for _vip in $_SKIP_IPS; do
                 [ "$_vip" = "$_candidate" ] && { _skip=1; break; }
@@ -415,9 +404,6 @@ discover_hosts() {
         log INFO "phase 1: $_live_count new candidate(s) to probe"
     fi
 
-    # -------------------------------------------------------------------
-    # Phase 2: SSH port probe on new candidates only
-    # -------------------------------------------------------------------
     : > "$_ssh_tmp"
 
     if [ -s "$_arp_tmp" ]; then
@@ -432,7 +418,6 @@ discover_hosts() {
                 { prev_ip = cur_ip; prev_has_open = has_open }
             ' "$_nmap_port_out" > "$_ssh_tmp" || true
 
-            # Fallback parser if above yields nothing but nmap ran fine
             if [ ! -s "$_ssh_tmp" ] && [ -s "$_nmap_port_out" ]; then
                 awk '
                     /Nmap scan report for / { ip = $NF; open=0 }
@@ -455,7 +440,6 @@ discover_hosts() {
         fi
     fi
 
-    # Deep scan mode (--deep): broader discovery before fingerprinting
     if [ "${NOEMAP_DEEP:-0}" = "1" ]; then
         log INFO "deep scan requested — running broader discovery..."
 
@@ -497,7 +481,6 @@ discover_hosts() {
             fi
         fi
 
-        # Exclude self after deep scan
         if [ -s "$_ssh_tmp" ]; then
             _no_self2="$(session_tmp ssh_no_self2)"
             grep -v "^${MY_IP}$" "$_ssh_tmp" > "$_no_self2" 2>/dev/null || true
@@ -508,18 +491,13 @@ discover_hosts() {
         log INFO "deep scan: ${_ssh_count:-0} SSH-reachable host(s)"
     fi
 
-    # -------------------------------------------------------------------
-    # Merge: validated (Phase 0) + new SSH-reachable (Phase 2)
-    # -------------------------------------------------------------------
     _merged="$(session_tmp merged_hosts)"
     : > "$_merged"
 
-    # Add Phase 0 validated hosts
     if [ -s "$_validated_tmp" ]; then
         cat "$_validated_tmp" >> "$_merged"
     fi
 
-    # Add Phase 2 new hosts (exclude self and already-validated)
     if [ -s "$_ssh_tmp" ]; then
         while IFS= read -r _ip; do
             [ -n "$_ip" ]          || continue
@@ -539,7 +517,6 @@ discover_hosts() {
         return 0
     fi
 
-    # Sort and deduplicate
     sort -t. -k4 -n "$_merged" | sort -u > "${_merged}.s" \
         && mv -f "${_merged}.s" "$_merged" || true
 
