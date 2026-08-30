@@ -374,9 +374,9 @@ ssh_key_bootstrap() {
         _kip="$(blockdb_field "$_skb_blk1" ip)"
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
         # reachable passwordless? (BatchMode: never prompts)
-        if nssh "$_ka" "true" >/dev/null 2>&1; then
+        if nssh "$_ka" "true" </dev/null >/dev/null 2>&1; then
             # idempotent append: only add if not already present
-            nssh "$_ka" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && grep -qxF '$_pubdata' ~/.ssh/authorized_keys || printf '%s\n' '$_pubdata' >> ~/.ssh/authorized_keys" >/dev/null 2>&1 \
+            nssh "$_ka" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && grep -qxF '$_pubdata' ~/.ssh/authorized_keys || printf '%s\n' '$_pubdata' >> ~/.ssh/authorized_keys" </dev/null >/dev/null 2>&1 \
                 && log OK "key ensured on $_ka" \
                 || log WARN "key append to $_ka failed"
         else
@@ -411,7 +411,7 @@ EOF_SKB1
         [ -n "$_skb_blk2" ] || continue
         _kip="$(blockdb_field "$_skb_blk2" ip)"
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
-        if nssh "$_ka" "true" >/dev/null 2>&1; then
+        if nssh "$_ka" "true" </dev/null >/dev/null 2>&1; then
             log OK "handshake $_ka: OK"
         else
             log WARN "handshake $_ka: needs setup"
