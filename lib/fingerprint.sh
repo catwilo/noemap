@@ -310,12 +310,26 @@ _update_registered_hosts() {
         _cur_user="$(blockdb_field "$_existing_blk" user)"
         _cur_hk="$(blockdb_field "$_existing_blk" hostkey)"
 
+        # Consult registry.db (cloud source of truth) before overwriting port
+        _registry_port="$_ssh_port"
+        if command -v registry_row_by_alias >/dev/null 2>&1; then
+            _reg_blk="$(registry_row_by_alias "$_existing" 2>/dev/null)"
+            if [ -n "$_reg_blk" ]; then
+                _reg_port="$(blockdb_field "$_reg_blk" port)"
+                [ -n "$_reg_port" ] && _registry_port="$_reg_port"
+            fi
+        fi
+
         if [ -n "$_ssh_port" ] && [ "$_ssh_port" != "$_cur_port" ]; then
             _existing_nid="$(blockdb_field "$_existing_blk" node_id)"
             _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
-                "$_existing" "$_ip" "$_cur_user" "$_ssh_port" "${_cur_hk:-}" "${_existing_nid:-}")"
+                "$_existing" "$_ip" "$_cur_user" "$_registry_port" "${_cur_hk:-}" "${_existing_nid:-}")"
             blockdb_upsert "$DEVICES_DB" alias "$_existing" "$_new_blk"
-            log INFO "updated SSH port for '$_existing': $_cur_port → $_ssh_port"
+            if [ "$_registry_port" != "$_ssh_port" ]; then
+                log INFO "detected SSH port $_ssh_port for '$_existing', but registry.db specifies $_registry_port -- using authoritative cloud value"
+            else
+                log INFO "updated SSH port for '$_existing': $_cur_port → $_ssh_port"
+            fi
         else
             log INFO "host $_ip already registered as '$_existing'"
         fi
