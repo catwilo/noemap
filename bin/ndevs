@@ -367,6 +367,12 @@ _cmd_push_vpn() {
 
 # _distribute_registry -- push registry.db to every known node via nssh,
 # skipping self. Called after every registry change so identity is never stale.
+# Fix noemap#407: the per-node loop runs in a pipe (subshell), so failures
+# cannot set a variable visible to this function directly. Failures are
+# counted in a temp file instead, read back after the pipe completes, so
+# the function returns a real, non-zero status when at least one reachable
+# node failed to receive the registry (unreachable nodes are skipped, not
+# counted as failures).
 _distribute_registry() {
     [ -f "$REGISTRY_DB" ] || return 0
     has_cmd nssh || { log WARN "nssh not found -- registry not distributed"; return 0; }
@@ -374,6 +380,7 @@ _distribute_registry() {
     [ -f "$DB" ] || return 0
     # Skip self by local IP (MY_IP if exported, else any 127.* / own row).
     _my_alias="$(node_alias 2>/dev/null || printf '')"
+    _dr_fail_count="$(mktemp "${TMPDIR:-/tmp}/distribute-registry-fails.XXXXXX")"
     _dr_aliases="$(awk '
         BEGIN { RS=""; FS="\n" }
         {
@@ -403,8 +410,12 @@ _distribute_registry() {
             log OK "registry -> $_na"
         else
             log WARN "registry to $_na failed (node down?) -- skipped"
+            printf 'x' >> "$_dr_fail_count"
         fi
     done
+    _dr_fails="$(wc -c < "$_dr_fail_count" 2>/dev/null || printf 0)"
+    rm -f "$_dr_fail_count"
+    [ "${_dr_fails:-0}" -eq 0 ]
 }
 
 # _registry_default_dir -- working tree of the git-backed registry repo.
@@ -416,6 +427,8 @@ _registry_default_dir() { printf '%s\n' "$HOME/.noemap-registry"; }
 # remote). Mirrors the manual flow already validated for this repo. Runs
 # best-effort: any git step failing warns and returns, never aborts the
 # caller (identity is already saved locally by the time this runs).
+# Fix noemap#407: explicit return so callers (_cmd_node_set) can detect
+# a real git-sync failure instead of always seeing success.
 _registry_commit_and_push() {
     _rc_dir="$(_registry_default_dir)"
     [ "$REGISTRY_DB" = "$_rc_dir/registry.db" ] || return 0
@@ -440,15 +453,25 @@ _registry_commit_and_push() {
       git branch -d "$_rc_branch" >/dev/null 2>&1
       git push origin --delete "$_rc_branch" >/dev/null 2>&1
     )
-    if [ $? -eq 0 ]; then
+    _rc_status=$?
+    if [ "$_rc_status" -eq 0 ]; then
         log OK "registry.db committed + pushed to noemap-registry (main)"
+        return 0
     else
         log WARN "registry.db git sync failed -- resolve manually in $_rc_dir"
+        return 1
     fi
 }
 
 # _cmd_node_set -- set THIS device's canonical identity in the master registry.
 # usage: ndevs --node-set <alias> [user] [port]
+# Fix noemap#407: the local blockdb_upsert always succeeds (it's a plain
+# file write), but the previous code reported "log OK" unconditionally
+# right after it, before knowing whether the registry.db change actually
+# reached git (_registry_commit_and_push) or the other nodes
+# (_distribute_registry). Both those functions now return a real exit
+# status; this command captures both and only reports full success when
+# both succeeded, otherwise a WARN naming exactly which step failed.
 _cmd_node_set() {
     [ $# -ge 1 ] || { printf 'usage: ndevs --node-set <alias> [user] [port]\n' >&2; exit 1; }
     _alias="$1"
@@ -470,9 +493,17 @@ _cmd_node_set() {
     [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
     _ns_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_nid" "$_alias" "$_user" "$_port")"
     blockdb_upsert "$REGISTRY_DB" node_id "$_nid" "$_ns_block"
-    log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
-    _registry_commit_and_push
-    _distribute_registry
+
+    _ns_commit_ok=1
+    _registry_commit_and_push || _ns_commit_ok=0
+    _ns_distribute_ok=1
+    _distribute_registry || _ns_distribute_ok=0
+
+    if [ "$_ns_commit_ok" -eq 1 ] && [ "$_ns_distribute_ok" -eq 1 ]; then
+        log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
+    else
+        log WARN "node identity saved locally: $_alias ($_nid) user=$_user port=$_port -- $([ "$_ns_commit_ok" -eq 0 ] && printf 'registry git sync failed' )$([ "$_ns_commit_ok" -eq 0 ] && [ "$_ns_distribute_ok" -eq 0 ] && printf '; ')$([ "$_ns_distribute_ok" -eq 0 ] && printf 'node distribution incomplete')"
+    fi
 }
 
 # _cmd_node_add -- register ANOTHER machine's identity by explicit node-id.
