@@ -172,8 +172,10 @@ _cmd_edit() {
     # If IP changed, clean known_hosts of old IP before reconnecting
     known_hosts_sync_device "$_cur_alias" "$_cur_ip" "$_new_ip"
 
-    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' \
-        "$_new_alias" "$_new_ip" "$_new_user" "$_new_port")"
+    _cur_hk="$(blockdb_field "$_row" hostkey)"
+    _cur_nid="$(blockdb_field "$_row" node_id)"
+    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+        "$_new_alias" "$_new_ip" "$_new_user" "$_new_port" "${_cur_hk:-}" "${_cur_nid:-}")"
     if [ "$_new_alias" != "$_cur_alias" ]; then
         blockdb_remove "$DB" alias "$_cur_alias"
     fi
@@ -238,8 +240,10 @@ _cmd_update_ip() {
 
     known_hosts_sync_device "$_alias" "$_old_ip" "$_new_ip"
 
-    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' \
-        "$_alias" "$_new_ip" "$_row_user" "$_row_port")"
+    _row_hk="$(blockdb_field "$_row" hostkey)"
+    _row_nid="$(blockdb_field "$_row" node_id)"
+    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+        "$_alias" "$_new_ip" "$_row_user" "$_row_port" "${_row_hk:-}" "${_row_nid:-}")"
     blockdb_upsert "$DB" alias "$_alias" "$_new_block"
     log OK "updated '$_alias': ip $_old_ip → $_new_ip"
 
@@ -263,7 +267,7 @@ _cmd_add() {
     # snapshot before any write so --rollback can restore
     _snap="$(_snapshot_db "$_alias")"
 
-    _add_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' "$_alias" "$_ip" "$_user" "$_port")"
+    _add_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' "$_alias" "$_ip" "$_user" "$_port" "" "")"
     blockdb_upsert "$DB" alias "$_alias" "$_add_block"
     log OK "registered '$_alias' ip=$_ip user=$_user port=$_port"
 

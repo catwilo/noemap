@@ -245,8 +245,9 @@ prompt_new_hosts() {
             known_hosts_remove_ip "$_alias_cur_ip"
             _cur_user="$(blockdb_field "$_alias_cur_blk" user)"
             _cur_hk="$(blockdb_field "$_alias_cur_blk" hostkey)"
-            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-                "$_alias" "$_ip" "${_cur_user:-}" "${_ssh_port:-22}" "${_cur_hk:-}")"
+            _cur_nid="$(blockdb_field "$_alias_cur_blk" node_id)"
+            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+                "$_alias" "$_ip" "${_cur_user:-}" "${_ssh_port:-22}" "${_cur_hk:-}" "${_cur_nid:-}")"
             blockdb_upsert "$_devdb" alias "$_alias" "$_new_blk"
             printf '\n'; continue
         fi
@@ -266,8 +267,8 @@ prompt_new_hosts() {
 
         known_hosts_remove_ip "$_ip"
         _new_host_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
-        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-            "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}")"
+        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+            "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}" "")"
         blockdb_upsert "$_devdb" alias "$_alias" "$_new_blk"
         printf "  ${_C_GREEN}[OK]${_C_RESET} registered \"%s\" -> %s  user=%s  port=%s\n\n" \
             "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}"

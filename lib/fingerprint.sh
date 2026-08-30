@@ -290,8 +290,9 @@ _update_registered_hosts() {
                     [ -n "$_cand_hk" ] || continue
                     if [ "$_cand_hk" = "$_hk_new" ]; then
                         _cand_user="$(blockdb_field "$_cand_blk" user)"
-                        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-                            "$_cand_alias" "$_ip" "$_cand_user" "${_ssh_port:-22}" "$_cand_hk")"
+                        _cand_nid="$(blockdb_field "$_cand_blk" node_id)"
+                        _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+                            "$_cand_alias" "$_ip" "$_cand_user" "${_ssh_port:-22}" "$_cand_hk" "${_cand_nid:-}")"
                         blockdb_upsert "$DEVICES_DB" alias "$_cand_alias" "$_new_blk"
                         log OK "alias '$_cand_alias' moved to new IP $_ip (matched via SSH host key, old IP unreachable)"
                         _existing="$_cand_alias"
@@ -310,8 +311,9 @@ _update_registered_hosts() {
         _cur_hk="$(blockdb_field "$_existing_blk" hostkey)"
 
         if [ -n "$_ssh_port" ] && [ "$_ssh_port" != "$_cur_port" ]; then
-            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-                "$_existing" "$_ip" "$_cur_user" "$_ssh_port" "${_cur_hk:-}")"
+            _existing_nid="$(blockdb_field "$_existing_blk" node_id)"
+            _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+                "$_existing" "$_ip" "$_cur_user" "$_ssh_port" "${_cur_hk:-}" "${_existing_nid:-}")"
             blockdb_upsert "$DEVICES_DB" alias "$_existing" "$_new_blk"
             log INFO "updated SSH port for '$_existing': $_cur_port → $_ssh_port"
         else
@@ -327,8 +329,9 @@ _update_registered_hosts() {
                 _refresh_blk="$(blockdb_get "$DEVICES_DB" alias "$_existing")"
                 _refresh_port="$(blockdb_field "$_refresh_blk" port)"
                 _refresh_user="$(blockdb_field "$_refresh_blk" user)"
-                _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-                    "$_existing" "$_ip" "$_refresh_user" "${_refresh_port:-22}" "$_new_hk")"
+                _existing_nid="$(blockdb_field "$_refresh_blk" node_id)"
+                _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+                    "$_existing" "$_ip" "$_refresh_user" "${_refresh_port:-22}" "$_new_hk" "${_existing_nid:-}")"
                 blockdb_upsert "$DEVICES_DB" alias "$_existing" "$_new_blk"
                 log INFO "backfilled SSH host key fingerprint for '$_existing'"
             fi

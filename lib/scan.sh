@@ -246,8 +246,8 @@ _self_register() {
         blockdb_remove "$DEVICES_DB" ip "$MY_IP"
     fi
 
-    _self_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-        "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}")"
+    _self_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+        "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}" "$(node_id)")"
     blockdb_upsert "$DEVICES_DB" alias "$_self_alias" "$_self_block"
     log OK "self-registered $_self_alias ($MY_IP) in devices.db"
     if command -v node_alias_set >/dev/null 2>&1; then
