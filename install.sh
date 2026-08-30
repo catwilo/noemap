@@ -340,6 +340,12 @@ ssh_key_bootstrap() {
     [ -f "$_devdb" ] && [ -s "$_devdb" ] || { log INFO "no nodes registered -- key distribution skipped"; return 0; }
     has "$BINDIR/nssh" || command -v nssh >/dev/null 2>&1 || { log INFO "nssh unavailable -- key distribution skipped"; return 0; }
 
+    # blockdb.sh must load before identity.sh, which calls blockdb_get/
+    # blockdb_field internally.
+    if [ -f "$LIBDIR/blockdb.sh" ]; then
+        # shellcheck source=/dev/null
+        . "$LIBDIR/blockdb.sh"
+    fi
     # Load is_local_ip so we never try to SSH into ourselves (local IPs are
     # dynamic/router-assigned; enumerated live via ifconfig in identity.sh).
     if [ -f "$LIBDIR/identity.sh" ]; then
@@ -350,8 +356,22 @@ ssh_key_bootstrap() {
     _pubdata="$(cat "$_pub")"
     _need_manual=""
     # iterate registered aliases (skip self handled by nssh/devices content)
-    while IFS='|' read -r _ka _kip _rest; do
-        case "$_ka" in ""|\#*) continue ;; esac
+    _skb_aliases1="$(blockdb_list "$_devdb" | awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ')"
+    while IFS= read -r _ka; do
+        [ -n "$_ka" ] || continue
+        _skb_blk1="$(blockdb_get "$_devdb" alias "$_ka")"
+        [ -n "$_skb_blk1" ] || continue
+        _kip="$(blockdb_field "$_skb_blk1" ip)"
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
         # reachable passwordless? (BatchMode: never prompts)
         if nssh "$_ka" "true" >/dev/null 2>&1; then
@@ -362,7 +382,9 @@ ssh_key_bootstrap() {
         else
             _need_manual="$_need_manual $_ka"
         fi
-    done < "$_devdb"
+    done <<EOF_SKB1
+$_skb_aliases1
+EOF_SKB1
 
     if [ -n "$_need_manual" ]; then
         log WARN "nodes needing first-time key setup:$_need_manual"
@@ -372,15 +394,31 @@ ssh_key_bootstrap() {
     fi
 
     # final handshake verification
-    while IFS='|' read -r _ka _kip _rest; do
-        case "$_ka" in ""|\#*) continue ;; esac
+    _skb_aliases2="$(blockdb_list "$_devdb" | awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ')"
+    while IFS= read -r _ka; do
+        [ -n "$_ka" ] || continue
+        _skb_blk2="$(blockdb_get "$_devdb" alias "$_ka")"
+        [ -n "$_skb_blk2" ] || continue
+        _kip="$(blockdb_field "$_skb_blk2" ip)"
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_kip"; then continue; fi
         if nssh "$_ka" "true" >/dev/null 2>&1; then
             log OK "handshake $_ka: OK"
         else
             log WARN "handshake $_ka: needs setup"
         fi
-    done < "$_devdb"
+    done <<EOF_SKB2
+$_skb_aliases2
+EOF_SKB2
 }
 ssh_key_bootstrap
 
