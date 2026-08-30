@@ -26,7 +26,7 @@ else
 fi
 _bindir="$(cd "$(dirname "$_self")" && pwd -P)"
 . "$_bindir/_bootstrap"
-_source_mods util.sh identity.sh
+_source_mods util.sh identity.sh blockdb.sh
 
 # Internal nssh/nscp calls below never prompt for a password; ssh_config's
 # automation Match block enforces BatchMode yes so a missing key fails fast.
@@ -44,28 +44,38 @@ _require_db() {
 }
 
 _has_data() {
-    awk -F'|' '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        NF >= 2          { found=1; exit }
-        END              { exit !found }
-    ' "$DB" 2>/dev/null && echo yes || echo no
+    [ -s "$DB" ] && echo yes || echo no
 }
 
 _print_table() {
-    _pt_data="$(awk -F'|' '
-        /^[[:space:]]*$/ { next } /^#/ { next }
-        NF >= 2 { port = ($4 == "" ? "22" : $4); print $1 "|" $2 "|" $3 "|" port }
-    ' "$DB")"
-    [ -n "$_pt_data" ] || return 0
-    _pt_marked="$(printf '%s\n' "$_pt_data" | while IFS='|' read -r _pa _pip _pu _pp; do
+    _pt_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DB" 2>/dev/null)"
+    [ -n "$_pt_aliases" ] || return 0
+
+    _pt_marked="$(printf '%s\n' "$_pt_aliases" | while IFS= read -r _pa; do
         [ -n "$_pa" ] || continue
+        _pblk="$(blockdb_get "$DB" alias "$_pa")"
+        [ -n "$_pblk" ] || continue
+        _pip="$(blockdb_field "$_pblk" ip)"
+        _pu="$(blockdb_field "$_pblk" user)"
+        _pp="$(blockdb_field "$_pblk" port)"
+        [ -n "$_pp" ] || _pp=22
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_pip"; then
             printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "<-- this"
         else
             printf '%s|%s|%s|%s|%s\n' "$_pa" "$_pip" "$_pu" "$_pp" ""
         fi
     done)"
+    [ -n "$_pt_marked" ] || return 0
     printf '%s\n' "$_pt_marked" | awk -F'|' '
         {
             if(length($1)>w1) w1=length($1)
@@ -90,14 +100,9 @@ _print_table() {
     '
 }
 
-# _find_alias alias — prints the raw db line for the alias, or empty string.
+# _find_alias alias — prints the block for the alias, or empty string.
 _find_alias() {
-    _a="$1"
-    awk -F'|' -v a="$_a" '
-        /^[[:space:]]*$/ { next }
-        /^#/             { next }
-        $1 == a          { print; exit }
-    ' "$DB" 2>/dev/null
+    blockdb_get "$DB" alias "$1"
 }
 
 _alias_exists() {
@@ -131,20 +136,6 @@ _prompt_field() {
     [ -z "$_val" ] && printf '%s\n' "$_current" || printf '%s\n' "$_val"
 }
 
-# _rewrite_db awk_program — runs awk on DB preserving comment/blank lines,
-# writes result to a temp file, then replaces DB atomically.
-# The awk program receives data lines only; comment/blank lines are passed through.
-_rewrite_db() {
-    _prog="$1"
-    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-    awk -F'|' -v prog=1 "
-        /^[[:space:]]*\$/ { print; next }
-        /^#/              { print; next }
-        ${_prog}
-    " "$DB" > "$_tmp_db"
-    mv -f "$_tmp_db" "$DB"
-}
-
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -166,10 +157,10 @@ _cmd_edit() {
     _row="$(_find_alias "$_alias")"
     [ -n "$_row" ] || { log ERROR "unknown alias: '$_alias'"; exit 1; }
 
-    _cur_alias="$(printf '%s\n' "$_row" | cut -d'|' -f1)"
-    _cur_ip="$(printf '%s\n'    "$_row" | cut -d'|' -f2)"
-    _cur_user="$(printf '%s\n'  "$_row" | cut -d'|' -f3)"
-    _cur_port="$(printf '%s\n'  "$_row" | cut -d'|' -f4)"
+    _cur_alias="$(blockdb_field "$_row" alias)"
+    _cur_ip="$(blockdb_field "$_row" ip)"
+    _cur_user="$(blockdb_field "$_row" user)"
+    _cur_port="$(blockdb_field "$_row" port)"
     [ -n "$_cur_port" ] || _cur_port=22
 
     printf '\nEditing device: %s\n' "$_alias" >&2
@@ -181,18 +172,12 @@ _cmd_edit() {
     # If IP changed, clean known_hosts of old IP before reconnecting
     known_hosts_sync_device "$_cur_alias" "$_cur_ip" "$_new_ip"
 
-    # Rewrite db: replace only the matching data line; preserve comments/blanks
-    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-    awk -F'|' \
-        -v old="$_cur_alias" \
-        -v na="$_new_alias" -v ni="$_new_ip" \
-        -v nu="$_new_user"  -v np="$_new_port" '
-        /^[[:space:]]*$/ { print; next }
-        /^#/             { print; next }
-        $1 == old        { printf "%s|%s|%s|%s\n", na, ni, nu, np; next }
-        { print }
-    ' "$DB" > "$_tmp_db"
-    mv -f "$_tmp_db" "$DB"
+    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' \
+        "$_new_alias" "$_new_ip" "$_new_user" "$_new_port")"
+    if [ "$_new_alias" != "$_cur_alias" ]; then
+        blockdb_remove "$DB" alias "$_cur_alias"
+    fi
+    blockdb_upsert "$DB" alias "$_new_alias" "$_new_block"
     log OK "updated '$_alias' → alias=$_new_alias ip=$_new_ip user=$_new_user port=$_new_port"
 }
 
@@ -202,14 +187,13 @@ _cmd_rename() {
     _require_db
     _alias_exists "$_old" || { log ERROR "unknown alias: '$_old'"; exit 1; }
 
-    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-    awk -F'|' -v old="$_old" -v new="$_new" '
-        /^[[:space:]]*$/ { print; next }
-        /^#/             { print; next }
-        $1 == old        { printf "%s|%s|%s|%s\n", new, $2, $3, $4; next }
+    _row="$(_find_alias "$_old")"
+    _new_block="$(printf '%s\n' "$_row" | awk -v na="$_new" '
+        /^alias:/ { print "alias: " na; next }
         { print }
-    ' "$DB" > "$_tmp_db"
-    mv -f "$_tmp_db" "$DB"
+    ')"
+    blockdb_remove "$DB" alias "$_old"
+    blockdb_upsert "$DB" alias "$_new" "$_new_block"
     log OK "renamed '$_old' → '$_new'"
 }
 
@@ -223,16 +207,9 @@ _cmd_remove() {
             log WARN "unknown alias: '$_alias' — skipping"
             continue
         fi
-        _ip="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+        _ip="$(blockdb_field "$_row" ip)"
 
-        _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-        awk -F'|' -v a="$_alias" '
-            /^[[:space:]]*$/ { print; next }
-            /^#/             { print; next }
-            $1 == a          { next }
-            { print }
-        ' "$DB" > "$_tmp_db"
-        mv -f "$_tmp_db" "$DB"
+        blockdb_remove "$DB" alias "$_alias"
 
         known_hosts_remove_ip "$_ip"
         log OK "removed '$_alias' ($_ip) and cleaned known_hosts"
@@ -252,24 +229,21 @@ _cmd_update_ip() {
 
     _row="$(_find_alias "$_alias")"
     [ -n "$_row" ] || { log ERROR "unknown alias: '$_alias'"; exit 1; }
-    _old_ip="$(printf '%s\n' "$_row" | cut -d'|' -f2)"
+    _old_ip="$(blockdb_field "$_row" ip)"
+    _row_user="$(blockdb_field "$_row" user)"
+    _row_port="$(blockdb_field "$_row" port)"
 
     # snapshot before write so --rollback can restore
     _snap="$(_snapshot_db "$_alias")"
 
     known_hosts_sync_device "$_alias" "$_old_ip" "$_new_ip"
 
-    _tmp_db="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-    awk -F'|' -v a="$_alias" -v ni="$_new_ip" '
-        /^[[:space:]]*$/ { print; next }
-        /^#/             { print; next }
-        $1 == a          { printf "%s|%s|%s|%s\n", $1, ni, $3, $4; next }
-        { print }
-    ' "$DB" > "$_tmp_db"
-    mv -f "$_tmp_db" "$DB"
+    _new_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' \
+        "$_alias" "$_new_ip" "$_row_user" "$_row_port")"
+    blockdb_upsert "$DB" alias "$_alias" "$_new_block"
     log OK "updated '$_alias': ip $_old_ip → $_new_ip"
 
-    if reachable_ssh "$_new_ip" "$(printf '%s\n' "$_row" | cut -d'|' -f4)"; then
+    if reachable_ssh "$_new_ip" "$_row_port"; then
         log OK "ssh check: $_new_ip reachable"
     else
         log WARN "ssh check: $_new_ip not reachable — entry kept; rollback with: ndevs --rollback $_alias"
@@ -282,14 +256,15 @@ _cmd_update_ip() {
 _cmd_add() {
     [ $# -ge 3 ] || { printf 'usage: ndevs --add <alias> <ip> <user> [port]\n' >&2; exit 1; }
     _alias="$1"; _ip="$2"; _user="$3"; _port="${4:-22}"
-    if [ -f "$DB" ] && grep -q "^${_alias}|" "$DB" 2>/dev/null; then
+    if [ -f "$DB" ] && [ -n "$(blockdb_get "$DB" alias "$_alias")" ]; then
         log ERROR "alias '$_alias' already exists — use --edit or --rename"; exit 1
     fi
 
     # snapshot before any write so --rollback can restore
     _snap="$(_snapshot_db "$_alias")"
 
-    printf '%s|%s|%s|%s\n' "$_alias" "$_ip" "$_user" "$_port" >> "$DB"
+    _add_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\n' "$_alias" "$_ip" "$_user" "$_port")"
+    blockdb_upsert "$DB" alias "$_alias" "$_add_block"
     log OK "registered '$_alias' ip=$_ip user=$_user port=$_port"
 
     # verify SSH reachability; the entry stays persistent either way
@@ -311,9 +286,24 @@ _propagate_db() {
     [ -f "$DB" ] || return 0
     has_cmd nscp || { log WARN "nscp not found — skipping db propagation"; return 0; }
     _remote_path="$HOME/.local/share/noemap/state/devices.db"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
-    while IFS='|' read -r _pa _pip _pport; do
+    _pd_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DB" 2>/dev/null)"
+    printf '%s\n' "$_pd_aliases" | while IFS= read -r _pa; do
         [ -n "$_pa" ] || continue
+        _pblk="$(blockdb_get "$DB" alias "$_pa")"
+        [ -n "$_pblk" ] || continue
+        _pip="$(blockdb_field "$_pblk" ip)"
+        _pport="$(blockdb_field "$_pblk" port)"
+        [ -n "$_pport" ] || _pport=22
         [ "$_pip" = "$_skip_ip" ] && continue
         case "$_pip" in 100.*) continue ;; esac
         if ! reachable_ssh "$_pip" "$_pport"; then
@@ -344,9 +334,24 @@ _cmd_push_vpn() {
     _require_db
     has_cmd nscp || { log ERROR "nscp not found"; exit 1; }
     _remote_path="$HOME/.local/share/noemap/state/devices.db"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
-    while IFS='|' read -r _pa _pip _pport; do
+    _pv_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DB" 2>/dev/null)"
+    printf '%s\n' "$_pv_aliases" | while IFS= read -r _pa; do
         [ -n "$_pa" ] || continue
+        _pblk="$(blockdb_get "$DB" alias "$_pa")"
+        [ -n "$_pblk" ] || continue
+        _pip="$(blockdb_field "$_pblk" ip)"
+        _pport="$(blockdb_field "$_pblk" port)"
+        [ -n "$_pport" ] || _pport=22
         case "$_pip" in 100.*) ;; *) continue ;; esac
         if ! reachable_ssh "$_pip" "$_pport"; then
             log WARN "push to $_pa skipped (unreachable: $_pip:$_pport)"
@@ -368,12 +373,26 @@ _distribute_registry() {
     _remote_reg="$HOME/.local/share/noemap/state/registry.db"
     [ -f "$DB" ] || return 0
     # Skip self by local IP (MY_IP if exported, else any 127.* / own row).
-    _my_ip="${MY_IP:-}"
     _my_alias="$(node_alias 2>/dev/null || printf '')"
-    awk -F'|' '/^[[:space:]]*$/{next}/^#/{next}NF>=2{port=($4==""?"22":$4);print $1"|"$2"|"port}' "$DB" | \
-    while IFS='|' read -r _na _nip _nport; do
+    _dr_aliases="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "alias") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$DB" 2>/dev/null)"
+    printf '%s\n' "$_dr_aliases" | while IFS= read -r _na; do
         [ -n "$_na" ] || continue
         [ "$_na" = "$_my_alias" ] && continue
+        _nblk="$(blockdb_get "$DB" alias "$_na")"
+        [ -n "$_nblk" ] || continue
+        _nip="$(blockdb_field "$_nblk" ip)"
+        _nport="$(blockdb_field "$_nblk" port)"
+        [ -n "$_nport" ] || _nport=22
         if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_nip"; then continue; fi
         case "$_nip" in 127.*|localhost) continue ;; esac
         if ! reachable_ssh "$_nip" "$_nport"; then
@@ -449,10 +468,8 @@ _cmd_node_set() {
     [ -n "$_nid" ] || { log ERROR "could not compute node id"; exit 1; }
     mkdir -p "$(dirname "$REGISTRY_DB")"
     [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-    _tmp="$(mktemp "${TMPDIR:-/tmp}/reg.XXXXXX")"
-    awk -F'|' -v id="$_nid" '/^[[:space:]]*$/{next}/^#/{next}$1!=id{print}' "$REGISTRY_DB" > "$_tmp"
-    printf '%s|%s|%s|%s\n' "$_nid" "$_alias" "$_user" "$_port" >> "$_tmp"
-    mv -f "$_tmp" "$REGISTRY_DB"
+    _ns_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_nid" "$_alias" "$_user" "$_port")"
+    blockdb_upsert "$REGISTRY_DB" node_id "$_nid" "$_ns_block"
     log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
     _registry_commit_and_push
     _distribute_registry
@@ -465,10 +482,11 @@ _cmd_node_add() {
     _nid="$1"; _alias="$2"; _user="$3"; _port="$4"
     mkdir -p "$(dirname "$REGISTRY_DB")"
     [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-    if grep -q "^${_nid}|" "$REGISTRY_DB" 2>/dev/null; then
+    if [ -n "$(blockdb_get "$REGISTRY_DB" node_id "$_nid")" ]; then
         log ERROR "node-id '$_nid' already registered -- use --node-set semantics or edit"; exit 1
     fi
-    printf '%s|%s|%s|%s\n' "$_nid" "$_alias" "$_user" "$_port" >> "$REGISTRY_DB"
+    _na_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_nid" "$_alias" "$_user" "$_port")"
+    blockdb_upsert "$REGISTRY_DB" node_id "$_nid" "$_na_block"
     log OK "node added: $_alias ($_nid) user=$_user port=$_port"
     _distribute_registry
 }
@@ -478,10 +496,26 @@ _cmd_nodes() {
     [ -f "$REGISTRY_DB" ] && [ -s "$REGISTRY_DB" ] || { log INFO "no nodes registered (use --node-set)"; return 0; }
     _me="$(node_id 2>/dev/null || printf '')"
     printf '  NODE-ID           ALIAS      USER       PORT  SELF\n'
-    awk -F'|' -v me="$_me" '
-        /^[[:space:]]*$/{next}/^#/{next}NF>=4{
-            printf "  %-16s  %-9s  %-9s  %-4s  %s\n",$1,$2,$3,$4,($1==me?"<-- this":"")
-        }' "$REGISTRY_DB"
+    _cn_nids="$(awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "node_id") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$REGISTRY_DB" 2>/dev/null)"
+    printf '%s\n' "$_cn_nids" | while IFS= read -r _cnid; do
+        [ -n "$_cnid" ] || continue
+        _cblk="$(blockdb_get "$REGISTRY_DB" node_id "$_cnid")"
+        [ -n "$_cblk" ] || continue
+        _calias="$(blockdb_field "$_cblk" alias)"
+        _cuser="$(blockdb_field "$_cblk" user)"
+        _cport="$(blockdb_field "$_cblk" port)"
+        printf "  %-16s  %-9s  %-9s  %-4s  %s\n" "$_cnid" "$_calias" "$_cuser" "$_cport" "$([ "$_cnid" = "$_me" ] && printf -- '<-- this')"
+    done
 }
 
 # ---------------------------------------------------------------------------
