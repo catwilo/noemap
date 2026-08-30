@@ -209,6 +209,7 @@ _self_register() {
             _self_alias="$(blockdb_field "$_self_row" alias)"
             _self_user="$(blockdb_field "$_self_row" user)"
             _self_port="$(blockdb_field "$_self_row" port)"
+            _self_alias_from_registry=1
         fi
     fi
 
@@ -219,6 +220,18 @@ _self_register() {
             _self_user="$(printf '%s\n'  "$_self_cache_row" | cut -d'|' -f2)"
             _self_port="$(printf '%s\n'  "$_self_cache_row" | cut -d'|' -f3)"
             log INFO "identity resolved from local node-config cache (registry unreachable): $_self_alias"
+        fi
+    fi
+
+    if [ "${_self_alias_from_registry:-0}" = "1" ]; then
+        _self_own_nid="$(node_id)"
+        _self_by_nid="$(blockdb_get "$DEVICES_DB" node_id "$_self_own_nid")"
+        if [ -n "$_self_by_nid" ]; then
+            _self_stale_alias="$(blockdb_field "$_self_by_nid" alias)"
+            if [ -n "$_self_stale_alias" ] && [ "$_self_stale_alias" != "$_self_alias" ]; then
+                log WARN "devices.db had stale self alias '$_self_stale_alias' (registry.db says '$_self_alias') -- correcting"
+                blockdb_remove "$DEVICES_DB" alias "$_self_stale_alias"
+            fi
         fi
     fi
 
