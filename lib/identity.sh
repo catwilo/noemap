@@ -156,9 +156,9 @@ _own_devices_ip() {
     [ -n "$_oda" ] || return 0
     _odb="$(_identity_statedir)/devices.db"
     [ -f "$_odb" ] || return 0
-    awk -F'|' -v a="$_oda" '
-        /^[[:space:]]*$/{next}/^#/{next}$1==a{print $2;exit}
-    ' "$_odb" 2>/dev/null
+    _blk="$(blockdb_get "$_odb" alias "$_oda")"
+    [ -n "$_blk" ] || return 0
+    blockdb_field "$_blk" ip
 }
 
 is_local_ip() {
@@ -181,10 +181,9 @@ node_alias() {
     _identity_registry_warn_once
     _nid="$(node_id)"
     [ -f "$REGISTRY_DB" ] || return 0
-    awk -F'|' -v id="$_nid" '
-        /^[[:space:]]*$/{next}/^#/{next}
-        $1==id { print $2; exit }
-    ' "$REGISTRY_DB" 2>/dev/null
+    _blk="$(blockdb_get "$REGISTRY_DB" node_id "$_nid")"
+    [ -n "$_blk" ] || return 0
+    blockdb_field "$_blk" alias
 }
 
 # node_registry_row -- full registry row for this node, or empty.
@@ -192,10 +191,7 @@ node_registry_row() {
     _identity_registry_warn_once
     _nid="$(node_id)"
     [ -f "$REGISTRY_DB" ] || return 0
-    awk -F'|' -v id="$_nid" '
-        /^[[:space:]]*$/{next}/^#/{next}
-        $1==id { print; exit }
-    ' "$REGISTRY_DB" 2>/dev/null
+    blockdb_get "$REGISTRY_DB" node_id "$_nid"
 }
 
 # node_alias_set ALIAS USER PORT -- create or update this node's registry row.
@@ -203,6 +199,9 @@ node_registry_row() {
 # node_id. If this node_id already has a row, that row is updated in place.
 # On success: writes REGISTRY_DB via mkit's atomic flow, then commits and
 # pushes the registry repo so the change survives a reformat of this node.
+# Fix noemap#407: the working-tree branch is created and rebased onto
+# origin/main FIRST, before mkit write ever touches registry.db, so the
+# later 'git pull --rebase' never runs against a dirty tree.
 node_alias_set() {
     _nas_alias="$1"
     _nas_user="$2"
@@ -217,10 +216,18 @@ node_alias_set() {
     mkdir -p "$_nas_dir" 2>/dev/null || true
     [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
 
-    _nas_owner="$(awk -F'|' -v a="$_nas_alias" '
-        /^[[:space:]]*$/{next}/^#/{next}
-        $2==a { print $1; exit }
-    ' "$REGISTRY_DB" 2>/dev/null)"
+    _nas_branch="chore/registry-${_nas_nid}"
+    ( cd "$_nas_dir" && \
+      git checkout main 2>/dev/null && \
+      git pull --rebase origin main && \
+      git checkout -B "$_nas_branch" ) || {
+        printf '[ERROR] node_alias_set: could not prepare branch %s in %s -- aborting before any write\n' \
+            "$_nas_branch" "$_nas_dir" >&2
+        return 1
+    }
+
+    _nas_owner_blk="$(blockdb_get "$REGISTRY_DB" alias "$_nas_alias")"
+    _nas_owner="$([ -n "$_nas_owner_blk" ] && blockdb_field "$_nas_owner_blk" node_id || printf '')"
     if [ -n "$_nas_owner" ] && [ "$_nas_owner" != "$_nas_nid" ]; then
         printf '[ERROR] node_alias_set: alias "%s" already registered to node %s\n' \
             "$_nas_alias" "$_nas_owner" >&2
@@ -228,27 +235,13 @@ node_alias_set() {
     fi
 
     _nas_current="$(node_registry_row)"
-    _nas_target="${_nas_nid}|${_nas_alias}|${_nas_user}|${_nas_port}"
+    _nas_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' \
+        "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port")"
     [ "$_nas_current" = "$_nas_target" ] && return 0
 
-    _nas_new="$(mktemp "${TMPDIR:-/tmp}/registry.db.XXXXXX")"
-    awk -F'|' -v id="$_nas_nid" '
-        $1==id { next }
-        { print }
-    ' "$REGISTRY_DB" > "$_nas_new" 2>/dev/null
-    printf '%s|%s|%s|%s\n' "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port" >> "$_nas_new"
+    blockdb_upsert "$REGISTRY_DB" node_id "$_nas_nid" "$_nas_target"
 
-    mkit write "$REGISTRY_DB" "$_nas_new" || {
-        rm -f "$_nas_new"
-        printf '[ERROR] node_alias_set: mkit write failed\n' >&2
-        return 1
-    }
-
-    _nas_branch="chore/registry-${_nas_nid}"
     ( cd "$_nas_dir" && \
-      git checkout main 2>/dev/null && \
-      git pull --rebase origin main && \
-      git checkout -B "$_nas_branch" && \
       git add registry.db && \
       git commit -m "chore(registry): set alias ${_nas_alias} for node ${_nas_nid}" && \
       git push -u origin "$_nas_branch" --force-with-lease && \
@@ -257,9 +250,20 @@ node_alias_set() {
       git push origin main && \
       git branch -d "$_nas_branch" && \
       git push origin --delete "$_nas_branch" ) || {
-        printf '[ERROR] node_alias_set: registry.db written locally but branch/commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
+        printf '[ERROR] node_alias_set: registry.db written locally but commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
             "$_nas_dir" "$_nas_branch" >&2
         return 1
     }
 }
 
+# registry_row_by_alias ALIAS -- full registry.db block for the given alias
+# (cloud source of truth), or empty if REGISTRY_DB missing or alias unknown.
+# Complements node_registry_row(), which looks up by node_id (this node's
+# own identity); this looks up any OTHER node by its alias.
+registry_row_by_alias() {
+    _rrba_alias="$1"
+    [ -n "$_rrba_alias" ] || return 0
+    _identity_registry_warn_once
+    [ -f "$REGISTRY_DB" ] || return 0
+    blockdb_get "$REGISTRY_DB" alias "$_rrba_alias"
+}

@@ -4,13 +4,20 @@
 # Shared by nssh, nscp and any tool that resolves an alias
 # to connection details.
 #
-# Database format (pipe-delimited, one device per line):
-#   ALIAS|IP|USER|PORT
+# Database format: blockdb (lib/blockdb.sh), one block per device:
+#   alias: <alias>
+#   ip: <ip>
+#   user: <user>
+#   port: <port>
+#   hostkey: <fingerprint or empty>
 #
-# Lines beginning with '#' or blank are ignored.
+# devices.db is local-only (IP is dynamic, never lives in the cloud
+# registry). If port or user is missing locally, this module falls back
+# to registry.db (the cloud source of truth, via registry_row_by_alias()
+# in identity.sh) before defaulting/prompting. IP has no cloud fallback --
+# it only ever comes from local devices.db.
 
 # resolve_device alias db_path — prints "IP|USER|PORT" or exits on error.
-# Uses awk for exact first-field match (immune to regex metacharacters).
 resolve_device() {
     _alias="$1"
     _db="$2"
@@ -20,18 +27,23 @@ resolve_device() {
         exit 1
     }
 
-    _line="$(awk -F'|' -v a="$_alias" '$1 == a { print; exit }' "$_db" 2>/dev/null || true)"
+    _blk="$(blockdb_get "$_db" alias "$_alias")"
 
-    [ -n "$_line" ] || {
+    [ -n "$_blk" ] || {
         log ERROR "unknown device alias: '$_alias'"
         exit 1
     }
 
-    _ip="$(printf '%s\n'   "$_line" | cut -d'|' -f2)"
-    _user="$(printf '%s\n' "$_line" | cut -d'|' -f3)"
-    _port="$(printf '%s\n' "$_line" | cut -d'|' -f4)"
+    _ip="$(blockdb_field "$_blk" ip)"
+    _user="$(blockdb_field "$_blk" user)"
+    _port="$(blockdb_field "$_blk" port)"
 
-    [ -n "$_ip" ]   || { log ERROR "devices.db: empty IP for '$_alias'"; exit 1; }
+    [ -n "$_ip" ] || { log ERROR "devices.db: empty IP for '$_alias'"; exit 1; }
+
+    if [ -z "$_port" ] && command -v registry_row_by_alias >/dev/null 2>&1; then
+        _cloud_blk="$(registry_row_by_alias "$_alias")"
+        [ -n "$_cloud_blk" ] && _port="$(blockdb_field "$_cloud_blk" port)"
+    fi
     [ -n "$_port" ] || _port=22
 
     printf '%s|%s|%s\n' "$_ip" "${_user:-}" "$_port"
@@ -40,9 +52,10 @@ resolve_device() {
 # ---------------------------------------------------------------------------
 # _ensure_user alias db_path current_user
 #
-# If user is empty or the placeholder "user", prompts interactively and
-# persists the answer to devices.db. Loops until a non-empty value is given.
-# In non-interactive mode, keeps the current value.
+# If user is empty or the placeholder "user": try the cloud registry first
+# (registry_row_by_alias); if still empty, prompt interactively and persist
+# the answer to devices.db. Loops until a non-empty value is given.
+# In non-interactive mode with no cloud value, keeps the current value.
 # Prints the resolved username to stdout.
 # ---------------------------------------------------------------------------
 _ensure_user() {
@@ -54,6 +67,19 @@ _ensure_user() {
         ''|user) ;;
         *) printf '%s\n' "$_eu_user"; return 0 ;;
     esac
+
+    if command -v registry_row_by_alias >/dev/null 2>&1; then
+        _eu_cloud_blk="$(registry_row_by_alias "$_eu_alias")"
+        if [ -n "$_eu_cloud_blk" ]; then
+            _eu_cloud_user="$(blockdb_field "$_eu_cloud_blk" user)"
+            if [ -n "$_eu_cloud_user" ]; then
+                blockdb_upsert "$_eu_db" alias "$_eu_alias" "$(blockdb_get "$_eu_db" alias "$_eu_alias" | sed "s/^user:.*/user: $_eu_cloud_user/")"
+                printf '  [i] user "%s" resolved from cloud registry for "%s"\n' "$_eu_cloud_user" "$_eu_alias" >&2
+                printf '%s\n' "$_eu_cloud_user"
+                return 0
+            fi
+        fi
+    fi
 
     [ -t 0 ] || { printf '%s\n' "${_eu_user:-}"; return 0; }
 
@@ -68,13 +94,14 @@ _ensure_user() {
             continue
         fi
 
-        _eu_tmp="$(mktemp "${TMPDIR:-/tmp}/ndevs.XXXXXX")"
-        awk -F'|' -v a="$_eu_alias" -v nu="$_eu_input" '
-            /^[[:space:]]*$/ { print; next }
-            /^#/             { print; next }
-            $1 == a          { printf "%s|%s|%s|%s\n", $1, $2, nu, $4; next }
-            { print }
-        ' "$_eu_db" > "$_eu_tmp" && mv -f "$_eu_tmp" "$_eu_db" || rm -f "$_eu_tmp"
+        _eu_blk="$(blockdb_get "$_eu_db" alias "$_eu_alias")"
+        if [ -n "$_eu_blk" ]; then
+            _eu_new_blk="$(printf '%s\n' "$_eu_blk" | awk -v nu="$_eu_input" '
+                /^user:/ { print "user: " nu; next }
+                { print }
+            ')"
+            blockdb_upsert "$_eu_db" alias "$_eu_alias" "$_eu_new_blk"
+        fi
 
         printf '  [i] user "%s" saved for "%s"\n' "$_eu_input" "$_eu_alias" >&2
         printf '%s\n' "$_eu_input"
@@ -97,15 +124,15 @@ resolve_scp_target() {
             _alias="${_val%%:*}"
             _path="${_val#*:}"
 
-            _line="$(awk -F'|' -v a="$_alias" '$1 == a { print; exit }' "$_db" 2>/dev/null || true)"
+            _blk="$(blockdb_get "$_db" alias "$_alias")"
 
-            if [ -z "$_line" ]; then
+            if [ -z "$_blk" ]; then
                 printf '%s\n' "$_val"
                 return 0
             fi
 
-            _ip="$(printf '%s\n'   "$_line" | cut -d'|' -f2)"
-            _user="$(printf '%s\n' "$_line" | cut -d'|' -f3)"
+            _ip="$(blockdb_field "$_blk" ip)"
+            _user="$(blockdb_field "$_blk" user)"
 
             [ -n "$_ip" ] || {
                 log ERROR "devices.db: missing IP for alias '$_alias'"
