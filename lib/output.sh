@@ -197,7 +197,6 @@ prompt_new_hosts() {
 
         printf "  ${_C_YELLOW}%s${_C_RESET}  os=%-14s  port=%s\n" \
             "$_ip" "$_type" "${_ssh_port:-22}"
-            "$_ip" "$_type" "${_ssh_port:-22}"
 
         case "$_type" in
             android-ssh) _base_alias="tx" ;;
