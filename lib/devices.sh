@@ -40,9 +40,12 @@ resolve_device() {
 
     [ -n "$_ip" ] || { log ERROR "devices.db: empty IP for '$_alias'"; exit 1; }
 
-    if [ -z "$_port" ] && command -v registry_row_by_alias >/dev/null 2>&1; then
+    if command -v registry_row_by_alias >/dev/null 2>&1; then
         _cloud_blk="$(registry_row_by_alias "$_alias")"
-        [ -n "$_cloud_blk" ] && _port="$(blockdb_field "$_cloud_blk" port)"
+        if [ -n "$_cloud_blk" ]; then
+            _cloud_port="$(blockdb_field "$_cloud_blk" port)"
+            [ -n "$_cloud_port" ] && _port="$_cloud_port"
+        fi
     fi
     [ -n "$_port" ] || _port=22
 
