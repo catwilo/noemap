@@ -73,24 +73,6 @@ _get_ssh_banner() {
 }
 
 # ---------------------------------------------------------------------------
-# _get_host_key_fingerprint ip port -- SSH host key fingerprint, NO auth
-# required (host keys are exposed during the unauthenticated handshake).
-# Stable per-host identity independent of IP, used by _update_registered_hosts
-# to detect "known alias, new IP" without needing credentials (miko-task
-# invariant: never SSH with credentials to an unregistered host). Prints
-# "SHA256:xxxx..." or nothing if ssh-keyscan/ssh-keygen are unavailable or
-# the host is unreachable/refuses key exchange within the timeout.
-# ---------------------------------------------------------------------------
-_get_host_key_fingerprint() {
-    _hk_ip="$1"; _hk_port="${2:-22}"
-    has_cmd ssh-keyscan || return 0
-    has_cmd ssh-keygen  || return 0
-    ssh-keyscan -p "$_hk_port" -T 3 "$_hk_ip" 2>/dev/null \
-        | ssh-keygen -lf - 2>/dev/null \
-        | awk '{print $2; exit}'
-}
-
-# ---------------------------------------------------------------------------
 # Type classification
 #
 # Fast mode: port heuristic only.

@@ -171,7 +171,32 @@ prompt_new_hosts() {
 
     while IFS='|' read -r _ip _type _ssh_port; do
         [ -n "$_ip" ] || continue
+
+        _pnh_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
+        _pnh_cloud_blk=""
+        [ -n "$_pnh_hk" ] && command -v registry_row_by_hostkey >/dev/null 2>&1 && \
+            _pnh_cloud_blk="$(registry_row_by_hostkey "$_pnh_hk")"
+
+        if [ -n "$_pnh_cloud_blk" ]; then
+            _pnh_alias="$(blockdb_field "$_pnh_cloud_blk" alias)"
+            _pnh_user="$(blockdb_field "$_pnh_cloud_blk" user)"
+            _pnh_port="$(blockdb_field "$_pnh_cloud_blk" port)"
+            _pnh_nid="$(blockdb_field "$_pnh_cloud_blk" node_id)"
+            if [ -n "$_pnh_alias" ] && [ -z "$(blockdb_get "$_devdb" alias "$_pnh_alias")" ]; then
+                printf "  ${_C_CYAN}[i]${_C_RESET} %s matched cloud registry: \"%s\" -- registering without prompts\n" \
+                    "$_ip" "$_pnh_alias"
+                known_hosts_remove_ip "$_ip"
+                _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
+                    "$_pnh_alias" "$_ip" "${_pnh_user:-u}" "${_pnh_port:-$_ssh_port}" "$_pnh_hk" "${_pnh_nid:-}")"
+                blockdb_upsert "$_devdb" alias "$_pnh_alias" "$_new_blk"
+                printf "  ${_C_GREEN}[OK]${_C_RESET} registered \"%s\" -> %s  user=%s  port=%s  (from cloud registry)\n\n" \
+                    "$_pnh_alias" "$_ip" "${_pnh_user:-u}" "${_pnh_port:-$_ssh_port}"
+                continue
+            fi
+        fi
+
         printf "  ${_C_YELLOW}%s${_C_RESET}  os=%-14s  port=%s\n" \
+            "$_ip" "$_type" "${_ssh_port:-22}"
             "$_ip" "$_type" "${_ssh_port:-22}"
 
         case "$_type" in
@@ -233,7 +258,7 @@ prompt_new_hosts() {
         done
 
         known_hosts_remove_ip "$_ip"
-        _new_host_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
+        _new_host_hk="${_pnh_hk:-$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)}"
         _new_blk="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
             "$_alias" "$_ip" "$_reg_user" "${_ssh_port:-22}" "${_new_host_hk:-}" "")"
         blockdb_upsert "$_devdb" alias "$_alias" "$_new_blk"

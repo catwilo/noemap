@@ -234,9 +234,20 @@ node_alias_set() {
         return 1
     fi
 
+    _nas_prev_hk=""
+    _nas_prev_row="$(blockdb_get "$REGISTRY_DB" node_id "$_nas_nid")"
+    [ -n "$_nas_prev_row" ] && _nas_prev_hk="$(blockdb_field "$_nas_prev_row" hostkey)"
+
+    _nas_hk=""
+    if command -v _get_host_key_fingerprint >/dev/null 2>&1; then
+        _nas_hk="$(_get_host_key_fingerprint 127.0.0.1 "$_nas_port" 2>/dev/null)"
+    fi
+    # keep previous value if this run's scan produced nothing (best-effort)
+    _nas_hk="${_nas_hk:-$_nas_prev_hk}"
+
     _nas_current="$(node_registry_row)"
-    _nas_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' \
-        "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port")"
+    _nas_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+        "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port" "${_nas_hk:-}")"
     [ "$_nas_current" = "$_nas_target" ] && return 0
 
     blockdb_upsert "$REGISTRY_DB" node_id "$_nas_nid" "$_nas_target"
@@ -268,6 +279,19 @@ registry_row_by_alias() {
     _identity_registry_warn_once
     [ -f "$REGISTRY_DB" ] || return 0
     blockdb_get "$REGISTRY_DB" alias "$_rrba_alias"
+}
+
+# registry_row_by_hostkey HOSTKEY -- full registry.db block for the given
+# SSH host key fingerprint (cloud source of truth), or empty if REGISTRY_DB
+# missing or no node has that hostkey recorded. Twin of registry_row_by_alias,
+# used to resolve a genuinely-new-to-this-node host that already has a row
+# in the cloud registry under a different node, without SSH auth.
+registry_row_by_hostkey() {
+    _rrbh_hk="$1"
+    [ -n "$_rrbh_hk" ] || return 0
+    _identity_registry_warn_once
+    [ -f "$REGISTRY_DB" ] || return 0
+    blockdb_get "$REGISTRY_DB" hostkey "$_rrbh_hk"
 }
 
 # _distribute_registry -- ensure every known node's ~/.noemap-registry clone
