@@ -254,23 +254,28 @@ _registry_write() {
     _rw_current="$_rw_prev_row"
     _rw_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
         "$_rw_nid" "$_rw_alias" "$_rw_user" "$_rw_port" "${_rw_hk:-}")"
-    [ "$_rw_current" = "$_rw_target" ] && return 0
 
-    blockdb_upsert "$REGISTRY_DB" node_id "$_rw_nid" "$_rw_target"
+    if [ "$_rw_current" = "$_rw_target" ]; then
+        # no local change to commit, but other nodes may still need the
+        # point-(5) handshake trigger below -- do not return early.
+        :
+    else
+        blockdb_upsert "$REGISTRY_DB" node_id "$_rw_nid" "$_rw_target"
 
-    ( cd "$_rw_dir" && \
-      git add registry.db && \
-      git commit -m "chore(registry): set alias ${_rw_alias} for node ${_rw_nid}" && \
-      git push -u origin "$_rw_branch" --force-with-lease && \
-      git checkout main && \
-      git merge --ff-only "$_rw_branch" && \
-      git push origin main && \
-      git branch -d "$_rw_branch" && \
-      git push origin --delete "$_rw_branch" ) || {
-        printf '[ERROR] _registry_write: registry.db written locally but commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
-            "$_rw_dir" "$_rw_branch" >&2
-        return 1
-    }
+        ( cd "$_rw_dir" && \
+          git add registry.db && \
+          git commit -m "chore(registry): set alias ${_rw_alias} for node ${_rw_nid}" && \
+          git push -u origin "$_rw_branch" --force-with-lease && \
+          git checkout main && \
+          git merge --ff-only "$_rw_branch" && \
+          git push origin main && \
+          git branch -d "$_rw_branch" && \
+          git push origin --delete "$_rw_branch" ) || {
+            printf '[ERROR] _registry_write: registry.db written locally but commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
+                "$_rw_dir" "$_rw_branch" >&2
+            return 1
+        }
+    fi
 
     _distribute_registry
 }
