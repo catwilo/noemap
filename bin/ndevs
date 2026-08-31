@@ -344,60 +344,10 @@ _cmd_push_vpn() {
 }
 
 
-# _registry_default_dir -- working tree of the git-backed registry repo.
-_registry_default_dir() { printf '%s\n' "$HOME/.noemap-registry"; }
-
-# _registry_commit_and_push -- if REGISTRY_DB is the default git-backed path
-# and that repo is cloned, commit the current registry.db to a throwaway
-# branch, push it, merge to main, push main, then delete the branch (local +
-# remote). Mirrors the manual flow already validated for this repo. Runs
-# best-effort: any git step failing warns and returns, never aborts the
-# caller (identity is already saved locally by the time this runs).
-# Fix noemap#407: explicit return so callers (_cmd_node_set) can detect
-# a real git-sync failure instead of always seeing success.
-_registry_commit_and_push() {
-    _rc_dir="$(_registry_default_dir)"
-    [ "$REGISTRY_DB" = "$_rc_dir/registry.db" ] || return 0
-    [ -d "$_rc_dir/.git" ] || { log WARN "registry repo not cloned at $_rc_dir -- skipping git commit"; return 0; }
-
-    _rc_branch="sync/$(date +%Y%m%d%H%M%S)-$(node_id 2>/dev/null || printf 'node')"
-
-    ( cd "$_rc_dir" || exit 1
-      git fetch origin >/dev/null 2>&1
-      git checkout main >/dev/null 2>&1 || git checkout -b main >/dev/null 2>&1
-      git pull --rebase origin main >/dev/null 2>&1
-      if git diff --quiet -- registry.db && git diff --cached --quiet -- registry.db; then
-          exit 0
-      fi
-      git checkout -b "$_rc_branch" >/dev/null 2>&1 || exit 1
-      git add registry.db
-      git commit -m "chore: sync registry.db ($(node_id 2>/dev/null))" >/dev/null 2>&1 || exit 1
-      git push -u origin "$_rc_branch" >/dev/null 2>&1 || exit 1
-      git checkout main >/dev/null 2>&1 || exit 1
-      git merge --no-edit "$_rc_branch" >/dev/null 2>&1 || exit 1
-      git push origin main >/dev/null 2>&1 || exit 1
-      git branch -d "$_rc_branch" >/dev/null 2>&1
-      git push origin --delete "$_rc_branch" >/dev/null 2>&1
-    )
-    _rc_status=$?
-    if [ "$_rc_status" -eq 0 ]; then
-        log OK "registry.db committed + pushed to noemap-registry (main)"
-        return 0
-    else
-        log WARN "registry.db git sync failed -- resolve manually in $_rc_dir"
-        return 1
-    fi
-}
-
 # _cmd_node_set -- set THIS device's canonical identity in the master registry.
 # usage: ndevs --node-set <alias> [user] [port]
-# Fix noemap#407: the local blockdb_upsert always succeeds (it's a plain
-# file write), but the previous code reported "log OK" unconditionally
-# right after it, before knowing whether the registry.db change actually
-# reached git (_registry_commit_and_push) or the other nodes
-# (_distribute_registry). Both those functions now return a real exit
-# status; this command captures both and only reports full success when
-# both succeeded, otherwise a WARN naming exactly which step failed.
+# Thin wrapper: all git/hostkey/distribution logic lives in identity.sh's
+# node_alias_set (single source of truth, shared with the noemap binary).
 _cmd_node_set() {
     [ $# -ge 1 ] || { printf 'usage: ndevs --node-set <alias> [user] [port]\n' >&2; exit 1; }
     _alias="$1"
@@ -413,22 +363,10 @@ _cmd_node_set() {
         _user="u"
     fi
     _port="${3:-8022}"
-    _nid="$(node_id)"
-    [ -n "$_nid" ] || { log ERROR "could not compute node id"; exit 1; }
-    mkdir -p "$(dirname "$REGISTRY_DB")"
-    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-    _ns_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_nid" "$_alias" "$_user" "$_port")"
-    blockdb_upsert "$REGISTRY_DB" node_id "$_nid" "$_ns_block"
-
-    _ns_commit_ok=1
-    _registry_commit_and_push || _ns_commit_ok=0
-    _ns_distribute_ok=1
-    _distribute_registry || _ns_distribute_ok=0
-
-    if [ "$_ns_commit_ok" -eq 1 ] && [ "$_ns_distribute_ok" -eq 1 ]; then
-        log OK "node identity set: $_alias ($_nid) user=$_user port=$_port"
+    if node_alias_set "$_alias" "$_user" "$_port"; then
+        log OK "node identity set: $_alias ($(node_id)) user=$_user port=$_port"
     else
-        log WARN "node identity saved locally: $_alias ($_nid) user=$_user port=$_port -- $([ "$_ns_commit_ok" -eq 0 ] && printf 'registry git sync failed' )$([ "$_ns_commit_ok" -eq 0 ] && [ "$_ns_distribute_ok" -eq 0 ] && printf '; ')$([ "$_ns_distribute_ok" -eq 0 ] && printf 'node distribution incomplete')"
+        log WARN "node identity set failed or incomplete for: $_alias -- see error above"
     fi
 }
 
@@ -437,49 +375,31 @@ _cmd_node_set() {
 _cmd_node_add() {
     [ $# -ge 4 ] || { printf 'usage: ndevs --node-add <node-id> <alias> <user> <port>\n' >&2; exit 1; }
     _nid="$1"; _alias="$2"; _user="$3"; _port="$4"
-    mkdir -p "$(dirname "$REGISTRY_DB")"
-    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-    if [ -n "$(blockdb_get "$REGISTRY_DB" node_id "$_nid")" ]; then
+    if [ -f "$REGISTRY_DB" ] && [ -n "$(blockdb_get "$REGISTRY_DB" node_id "$_nid")" ]; then
         log ERROR "node-id '$_nid' already registered -- use --node-set semantics or edit"; exit 1
     fi
-    _na_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_nid" "$_alias" "$_user" "$_port")"
-    blockdb_upsert "$REGISTRY_DB" node_id "$_nid" "$_na_block"
-    log OK "node added: $_alias ($_nid) user=$_user port=$_port"
-    _distribute_registry
+    if _registry_write "$_nid" "$_alias" "$_user" "$_port"; then
+        log OK "node added: $_alias ($_nid) user=$_user port=$_port"
+    else
+        log WARN "node add failed or incomplete for: $_alias ($_nid) -- see error above"
+    fi
 }
 
 # _cmd_registry_set -- edit ANY node's row in the master registry by explicit
 # node-id, overwriting alias/user/port. Unlike --node-set (restricted to THIS
 # node's own node_id), this targets any row -- the registry is cloud-backed
 # source of truth, so a correction made here from any node propagates via the
-# same commit+push+merge+distribute flow as --node-set. Fails if the target
-# alias is already owned by a DIFFERENT node_id (collision guard, same rule
-# as node_alias_set in identity.sh).
+# same commit+push+merge+distribute flow. Fails if the target alias is
+# already owned by a DIFFERENT node_id (collision guard, enforced inside
+# _registry_write).
 # usage: ndevs --registry-set <node-id> <alias> [user] [port]
 _cmd_registry_set() {
     [ $# -ge 2 ] || { printf 'usage: ndevs --registry-set <node-id> <alias> [user] [port]\n' >&2; exit 1; }
     _rs_nid="$1"; _rs_alias="$2"; _rs_user="${3:-u}"; _rs_port="${4:-8022}"
-    mkdir -p "$(dirname "$REGISTRY_DB")"
-    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-
-    _rs_owner_blk="$(blockdb_get "$REGISTRY_DB" alias "$_rs_alias")"
-    _rs_owner="$([ -n "$_rs_owner_blk" ] && blockdb_field "$_rs_owner_blk" node_id || printf '')"
-    if [ -n "$_rs_owner" ] && [ "$_rs_owner" != "$_rs_nid" ]; then
-        log ERROR "alias '$_rs_alias' already registered to node $_rs_owner"; exit 1
-    fi
-
-    _rs_block="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\n' "$_rs_nid" "$_rs_alias" "$_rs_user" "$_rs_port")"
-    blockdb_upsert "$REGISTRY_DB" node_id "$_rs_nid" "$_rs_block"
-
-    _rs_commit_ok=1
-    _registry_commit_and_push || _rs_commit_ok=0
-    _rs_distribute_ok=1
-    _distribute_registry || _rs_distribute_ok=0
-
-    if [ "$_rs_commit_ok" -eq 1 ] && [ "$_rs_distribute_ok" -eq 1 ]; then
+    if _registry_write "$_rs_nid" "$_rs_alias" "$_rs_user" "$_rs_port"; then
         log OK "registry updated: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port"
     else
-        log WARN "registry saved locally: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port -- $([ "$_rs_commit_ok" -eq 0 ] && printf 'registry git sync failed' )$([ "$_rs_commit_ok" -eq 0 ] && [ "$_rs_distribute_ok" -eq 0 ] && printf '; ')$([ "$_rs_distribute_ok" -eq 0 ] && printf 'node distribution incomplete')"
+        log WARN "registry update failed or incomplete for: $_rs_alias ($_rs_nid) -- see error above"
     fi
 }
 

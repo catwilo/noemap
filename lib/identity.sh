@@ -194,14 +194,91 @@ node_registry_row() {
     blockdb_get "$REGISTRY_DB" node_id "$_nid"
 }
 
-# node_alias_set ALIAS USER PORT -- create or update this node's registry row.
-# Fails (return 1, writes nothing) if ALIAS is already taken by a DIFFERENT
-# node_id. If this node_id already has a row, that row is updated in place.
+# _registry_write NODE_ID ALIAS USER PORT -- single source of truth for
+# writing any row in registry.db: this node's own identity or another
+# node's, by explicit node-id. Fails (return 1, writes nothing) if ALIAS
+# is already taken by a DIFFERENT node_id. Hostkey resolution: if NODE_ID
+# is this machine's own node_id, scans its local sshd (127.0.0.1:PORT,
+# no auth); otherwise preserves whatever hostkey the row already had
+# (never guessable for a remote node without SSH auth to it).
 # On success: writes REGISTRY_DB via mkit's atomic flow, then commits and
-# pushes the registry repo so the change survives a reformat of this node.
+# pushes the registry repo (fixed branch chore/registry-<node-id>,
+# ff-only merge -- fails loud instead of a silent merge commit on
+# divergence), then distributes to every reachable node.
 # Fix noemap#407: the working-tree branch is created and rebased onto
 # origin/main FIRST, before mkit write ever touches registry.db, so the
 # later 'git pull --rebase' never runs against a dirty tree.
+_registry_write() {
+    _rw_nid="$1"
+    _rw_alias="$2"
+    _rw_user="$3"
+    _rw_port="$4"
+    if [ -z "$_rw_nid" ] || [ -z "$_rw_alias" ] || [ -z "$_rw_user" ] || [ -z "$_rw_port" ]; then
+        printf '[ERROR] _registry_write: node-id, alias, user and port are required\n' >&2
+        return 1
+    fi
+    _identity_registry_warn_once
+    _rw_dir="$(dirname "$REGISTRY_DB")"
+    mkdir -p "$_rw_dir" 2>/dev/null || true
+    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
+
+    _rw_branch="chore/registry-${_rw_nid}"
+    ( cd "$_rw_dir" && \
+      git checkout main 2>/dev/null && \
+      git pull --rebase origin main && \
+      git checkout -B "$_rw_branch" ) || {
+        printf '[ERROR] _registry_write: could not prepare branch %s in %s -- aborting before any write\n' \
+            "$_rw_branch" "$_rw_dir" >&2
+        return 1
+    }
+
+    _rw_owner_blk="$(blockdb_get "$REGISTRY_DB" alias "$_rw_alias")"
+    _rw_owner="$([ -n "$_rw_owner_blk" ] && blockdb_field "$_rw_owner_blk" node_id || printf '')"
+    if [ -n "$_rw_owner" ] && [ "$_rw_owner" != "$_rw_nid" ]; then
+        printf '[ERROR] _registry_write: alias "%s" already registered to node %s\n' \
+            "$_rw_alias" "$_rw_owner" >&2
+        return 1
+    fi
+
+    _rw_prev_hk=""
+    _rw_prev_row="$(blockdb_get "$REGISTRY_DB" node_id "$_rw_nid")"
+    [ -n "$_rw_prev_row" ] && _rw_prev_hk="$(blockdb_field "$_rw_prev_row" hostkey)"
+
+    _rw_hk="$_rw_prev_hk"
+    if [ "$_rw_nid" = "$(node_id)" ] && command -v _get_host_key_fingerprint >/dev/null 2>&1; then
+        _rw_scanned_hk="$(_get_host_key_fingerprint 127.0.0.1 "$_rw_port" 2>/dev/null)"
+        # keep previous value if this run's scan produced nothing (best-effort)
+        _rw_hk="${_rw_scanned_hk:-$_rw_prev_hk}"
+    fi
+
+    _rw_current="$_rw_prev_row"
+    _rw_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
+        "$_rw_nid" "$_rw_alias" "$_rw_user" "$_rw_port" "${_rw_hk:-}")"
+    [ "$_rw_current" = "$_rw_target" ] && return 0
+
+    blockdb_upsert "$REGISTRY_DB" node_id "$_rw_nid" "$_rw_target"
+
+    ( cd "$_rw_dir" && \
+      git add registry.db && \
+      git commit -m "chore(registry): set alias ${_rw_alias} for node ${_rw_nid}" && \
+      git push -u origin "$_rw_branch" --force-with-lease && \
+      git checkout main && \
+      git merge --ff-only "$_rw_branch" && \
+      git push origin main && \
+      git branch -d "$_rw_branch" && \
+      git push origin --delete "$_rw_branch" ) || {
+        printf '[ERROR] _registry_write: registry.db written locally but commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
+            "$_rw_dir" "$_rw_branch" >&2
+        return 1
+    }
+
+    _distribute_registry
+}
+
+# node_alias_set ALIAS USER PORT -- create or update THIS node's registry
+# row. Thin wrapper over _registry_write using this machine's own node_id
+# (guarantees local hostkey scanning applies). See _registry_write for
+# the full contract.
 node_alias_set() {
     _nas_alias="$1"
     _nas_user="$2"
@@ -210,64 +287,9 @@ node_alias_set() {
         printf '[ERROR] node_alias_set: alias, user and port are required\n' >&2
         return 1
     fi
-    _identity_registry_warn_once
-    _nas_nid="$(node_id)"
-    _nas_dir="$(dirname "$REGISTRY_DB")"
-    mkdir -p "$_nas_dir" 2>/dev/null || true
-    [ -f "$REGISTRY_DB" ] || : > "$REGISTRY_DB"
-
-    _nas_branch="chore/registry-${_nas_nid}"
-    ( cd "$_nas_dir" && \
-      git checkout main 2>/dev/null && \
-      git pull --rebase origin main && \
-      git checkout -B "$_nas_branch" ) || {
-        printf '[ERROR] node_alias_set: could not prepare branch %s in %s -- aborting before any write\n' \
-            "$_nas_branch" "$_nas_dir" >&2
-        return 1
-    }
-
-    _nas_owner_blk="$(blockdb_get "$REGISTRY_DB" alias "$_nas_alias")"
-    _nas_owner="$([ -n "$_nas_owner_blk" ] && blockdb_field "$_nas_owner_blk" node_id || printf '')"
-    if [ -n "$_nas_owner" ] && [ "$_nas_owner" != "$_nas_nid" ]; then
-        printf '[ERROR] node_alias_set: alias "%s" already registered to node %s\n' \
-            "$_nas_alias" "$_nas_owner" >&2
-        return 1
-    fi
-
-    _nas_prev_hk=""
-    _nas_prev_row="$(blockdb_get "$REGISTRY_DB" node_id "$_nas_nid")"
-    [ -n "$_nas_prev_row" ] && _nas_prev_hk="$(blockdb_field "$_nas_prev_row" hostkey)"
-
-    _nas_hk=""
-    if command -v _get_host_key_fingerprint >/dev/null 2>&1; then
-        _nas_hk="$(_get_host_key_fingerprint 127.0.0.1 "$_nas_port" 2>/dev/null)"
-    fi
-    # keep previous value if this run's scan produced nothing (best-effort)
-    _nas_hk="${_nas_hk:-$_nas_prev_hk}"
-
-    _nas_current="$(node_registry_row)"
-    _nas_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-        "$_nas_nid" "$_nas_alias" "$_nas_user" "$_nas_port" "${_nas_hk:-}")"
-    [ "$_nas_current" = "$_nas_target" ] && return 0
-
-    blockdb_upsert "$REGISTRY_DB" node_id "$_nas_nid" "$_nas_target"
-
-    ( cd "$_nas_dir" && \
-      git add registry.db && \
-      git commit -m "chore(registry): set alias ${_nas_alias} for node ${_nas_nid}" && \
-      git push -u origin "$_nas_branch" --force-with-lease && \
-      git checkout main && \
-      git merge --ff-only "$_nas_branch" && \
-      git push origin main && \
-      git branch -d "$_nas_branch" && \
-      git push origin --delete "$_nas_branch" ) || {
-        printf '[ERROR] node_alias_set: registry.db written locally but commit/push/merge failed -- resolve manually in %s (branch: %s)\n' \
-            "$_nas_dir" "$_nas_branch" >&2
-        return 1
-    }
-
-    _distribute_registry
+    _registry_write "$(node_id)" "$_nas_alias" "$_nas_user" "$_nas_port"
 }
+
 
 # registry_row_by_alias ALIAS -- full registry.db block for the given alias
 # (cloud source of truth), or empty if REGISTRY_DB missing or alias unknown.
