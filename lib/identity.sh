@@ -371,6 +371,23 @@ _distribute_registry() {
         fi
         if [ -n "$_dr_local_head" ] && [ "$_dr_remote_head" = "$_dr_local_head" ]; then
             log OK "registry synced -> $_na (MATCH $_dr_remote_head)"
+            # Point (5): bidirectional handshake in one run -- if the remote
+            # node's own row in this (now-confirmed-current) REGISTRY_DB has
+            # no hostkey yet, trigger its own node-set remotely via nssh so
+            # it self-registers without a manual step on that machine. Uses
+            # user/port already known locally in devices.db for that alias
+            # (the credentials this node uses to reach it); node_alias_set
+            # on the remote side is idempotent (no-op if already current).
+            _dr_remote_hk_blk="$(blockdb_get "$REGISTRY_DB" alias "$_na")"
+            _dr_remote_hk="$([ -n "$_dr_remote_hk_blk" ] && blockdb_field "$_dr_remote_hk_blk" hostkey || printf '')"
+            if [ -z "$_dr_remote_hk" ]; then
+                _dr_nuser="$(blockdb_field "$_nblk" user)"; _dr_nuser="${_dr_nuser:-u}"
+                if nssh "$_na" "command -v ndevs >/dev/null 2>&1 && ndevs --node-set '$_na' '$_dr_nuser' '$_nport'" >/dev/null 2>&1; then
+                    log OK "triggered remote hostkey registration on $_na"
+                else
+                    log WARN "could not trigger remote hostkey registration on $_na -- run 'ndevs --node-set $_na' there manually"
+                fi
+            fi
         else
             log WARN "registry synced -> $_na (DIFF: local=${_dr_local_head:-?} remote=$_dr_remote_head)"
             printf 'x' >> "$_dr_fail_count"
