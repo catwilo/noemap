@@ -194,7 +194,7 @@ node_registry_row() {
     blockdb_get "$REGISTRY_DB" node_id "$_nid"
 }
 
-# _registry_write NODE_ID ALIAS USER PORT -- single source of truth for
+# _registry_write NODE_ID ALIAS USER PORT PLATFORM -- single source of truth for
 # writing any row in registry.db: this node's own identity or another
 # node's, by explicit node-id. Fails (return 1, writes nothing) if ALIAS
 # is already taken by a DIFFERENT node_id. Hostkey resolution: if NODE_ID
@@ -213,8 +213,9 @@ _registry_write() {
     _rw_alias="$2"
     _rw_user="$3"
     _rw_port="$4"
-    if [ -z "$_rw_nid" ] || [ -z "$_rw_alias" ] || [ -z "$_rw_user" ] || [ -z "$_rw_port" ]; then
-        printf '[ERROR] _registry_write: node-id, alias, user and port are required\n' >&2
+    _rw_platform="$5"
+    if [ -z "$_rw_nid" ] || [ -z "$_rw_alias" ] || [ -z "$_rw_user" ] || [ -z "$_rw_port" ] || [ -z "$_rw_platform" ]; then
+        printf '[ERROR] _registry_write: node-id, alias, user, port and platform are required\n' >&2
         return 1
     fi
     _identity_registry_warn_once
@@ -252,8 +253,8 @@ _registry_write() {
     fi
 
     _rw_current="$_rw_prev_row"
-    _rw_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nhostkey: %s\n' \
-        "$_rw_nid" "$_rw_alias" "$_rw_user" "$_rw_port" "${_rw_hk:-}")"
+    _rw_target="$(printf 'node_id: %s\nalias: %s\nuser: %s\nport: %s\nplatform: %s\nhostkey: %s\n' \
+        "$_rw_nid" "$_rw_alias" "$_rw_user" "$_rw_port" "$_rw_platform" "${_rw_hk:-}")"
 
     if [ "$_rw_current" = "$_rw_target" ]; then
         # no local change to commit, but other nodes may still need the
@@ -280,7 +281,7 @@ _registry_write() {
     _distribute_registry
 }
 
-# node_alias_set ALIAS USER PORT -- create or update THIS node's registry
+# node_alias_set ALIAS USER PORT PLATFORM -- create or update THIS node's registry
 # row. Thin wrapper over _registry_write using this machine's own node_id
 # (guarantees local hostkey scanning applies). See _registry_write for
 # the full contract.
@@ -288,11 +289,12 @@ node_alias_set() {
     _nas_alias="$1"
     _nas_user="$2"
     _nas_port="$3"
-    if [ -z "$_nas_alias" ] || [ -z "$_nas_user" ] || [ -z "$_nas_port" ]; then
-        printf '[ERROR] node_alias_set: alias, user and port are required\n' >&2
+    _nas_platform="$4"
+    if [ -z "$_nas_alias" ] || [ -z "$_nas_user" ] || [ -z "$_nas_port" ] || [ -z "$_nas_platform" ]; then
+        printf '[ERROR] node_alias_set: alias, user, port and platform are required\n' >&2
         return 1
     fi
-    _registry_write "$(node_id)" "$_nas_alias" "$_nas_user" "$_nas_port"
+    _registry_write "$(node_id)" "$_nas_alias" "$_nas_user" "$_nas_port" "$_nas_platform"
 }
 
 

@@ -111,15 +111,17 @@ _cmd_list() {
         _pu="$(blockdb_field "$_pblk" user)"
         _pp="$(blockdb_field "$_pblk" port)"
         [ -n "$_pp" ] || _pp=22
+        _pplat="$(blockdb_field "$_pblk" platform)"
+        [ -n "$_pplat" ] || _pplat="unknown"
         _pnid=""
         if [ -f "$REGISTRY_DB" ]; then
             _preg_blk="$(blockdb_get "$REGISTRY_DB" alias "$_pa")"
             [ -n "$_preg_blk" ] && _pnid="$(blockdb_field "$_preg_blk" node_id)"
         fi
         if [ -n "$_me" ] && [ "$_pa" = "$_me" ]; then
-            printf 'alias=%s ip=%s user=%s port=%s node_id=%s (this node)\n' "$_pa" "$_pip" "$_pu" "$_pp" "${_pnid:-?}"
+            printf 'alias=%s ip=%s user=%s port=%s platform=%s node_id=%s -- this is the local node (%s)\n' "$_pa" "$_pip" "$_pu" "$_pp" "$_pplat" "${_pnid:-?}" "$_pplat"
         else
-            printf 'alias=%s ip=%s user=%s port=%s node_id=%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "${_pnid:-?}"
+            printf 'alias=%s ip=%s user=%s port=%s platform=%s node_id=%s\n' "$_pa" "$_pip" "$_pu" "$_pp" "$_pplat" "${_pnid:-?}"
         fi
     done
 }
@@ -345,11 +347,11 @@ _cmd_push_vpn() {
 
 
 # _cmd_node_set -- set THIS device's canonical identity in the master registry.
-# usage: ndevs --node-set <alias> [user] [port]
+# usage: ndevs --node-set <alias> [user] [port] [platform]
 # Thin wrapper: all git/hostkey/distribution logic lives in identity.sh's
 # node_alias_set (single source of truth, shared with the noemap binary).
 _cmd_node_set() {
-    [ $# -ge 1 ] || { printf 'usage: ndevs --node-set <alias> [user] [port]\n' >&2; exit 1; }
+    [ $# -ge 1 ] || { printf 'usage: ndevs --node-set <alias> [user] [port] [platform]\n' >&2; exit 1; }
     _alias="$1"
     # Default user is 'u' (Android user name is irrelevant). If not passed and
     # stdin is a tty, prompt with 'u' as the suggested default (Enter accepts).
@@ -363,23 +365,34 @@ _cmd_node_set() {
         _user="u"
     fi
     _port="${3:-8022}"
-    if node_alias_set "$_alias" "$_user" "$_port"; then
-        log OK "node identity set: $_alias ($(node_id)) user=$_user port=$_port"
+    # Default platform is 'android' (Termux is the common case for this suite).
+    # If not passed and stdin is a tty, prompt with 'android' as suggested default.
+    if [ -n "${4:-}" ]; then
+        _platform="$4"
+    elif [ -t 0 ]; then
+        printf '  platform [android]: ' >&2
+        read -r _platform </dev/tty || _platform=""
+        [ -n "$_platform" ] || _platform="android"
+    else
+        _platform="android"
+    fi
+    if node_alias_set "$_alias" "$_user" "$_port" "$_platform"; then
+        log OK "node identity set: $_alias ($(node_id)) user=$_user port=$_port platform=$_platform"
     else
         log WARN "node identity set failed or incomplete for: $_alias -- see error above"
     fi
 }
 
 # _cmd_node_add -- register ANOTHER machine's identity by explicit node-id.
-# usage: ndevs --node-add <node-id> <alias> <user> <port>
+# usage: ndevs --node-add <node-id> <alias> <user> <port> <platform>
 _cmd_node_add() {
-    [ $# -ge 4 ] || { printf 'usage: ndevs --node-add <node-id> <alias> <user> <port>\n' >&2; exit 1; }
-    _nid="$1"; _alias="$2"; _user="$3"; _port="$4"
+    [ $# -ge 5 ] || { printf 'usage: ndevs --node-add <node-id> <alias> <user> <port> <platform>\n' >&2; exit 1; }
+    _nid="$1"; _alias="$2"; _user="$3"; _port="$4"; _platform="$5"
     if [ -f "$REGISTRY_DB" ] && [ -n "$(blockdb_get "$REGISTRY_DB" node_id "$_nid")" ]; then
         log ERROR "node-id '$_nid' already registered -- use --node-set semantics or edit"; exit 1
     fi
-    if _registry_write "$_nid" "$_alias" "$_user" "$_port"; then
-        log OK "node added: $_alias ($_nid) user=$_user port=$_port"
+    if _registry_write "$_nid" "$_alias" "$_user" "$_port" "$_platform"; then
+        log OK "node added: $_alias ($_nid) user=$_user port=$_port platform=$_platform"
     else
         log WARN "node add failed or incomplete for: $_alias ($_nid) -- see error above"
     fi
@@ -392,12 +405,12 @@ _cmd_node_add() {
 # same commit+push+merge+distribute flow. Fails if the target alias is
 # already owned by a DIFFERENT node_id (collision guard, enforced inside
 # _registry_write).
-# usage: ndevs --registry-set <node-id> <alias> [user] [port]
+# usage: ndevs --registry-set <node-id> <alias> [user] [port] [platform]
 _cmd_registry_set() {
-    [ $# -ge 2 ] || { printf 'usage: ndevs --registry-set <node-id> <alias> [user] [port]\n' >&2; exit 1; }
-    _rs_nid="$1"; _rs_alias="$2"; _rs_user="${3:-u}"; _rs_port="${4:-8022}"
-    if _registry_write "$_rs_nid" "$_rs_alias" "$_rs_user" "$_rs_port"; then
-        log OK "registry updated: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port"
+    [ $# -ge 2 ] || { printf 'usage: ndevs --registry-set <node-id> <alias> [user] [port] [platform]\n' >&2; exit 1; }
+    _rs_nid="$1"; _rs_alias="$2"; _rs_user="${3:-u}"; _rs_port="${4:-8022}"; _rs_platform="${5:-android}"
+    if _registry_write "$_rs_nid" "$_rs_alias" "$_rs_user" "$_rs_port" "$_rs_platform"; then
+        log OK "registry updated: $_rs_alias ($_rs_nid) user=$_rs_user port=$_rs_port platform=$_rs_platform"
     else
         log WARN "registry update failed or incomplete for: $_rs_alias ($_rs_nid) -- see error above"
     fi

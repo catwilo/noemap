@@ -203,12 +203,14 @@ _self_register() {
     _self_alias=""
     _self_user=""
     _self_port=""
+    _self_platform=""
     if command -v node_registry_row >/dev/null 2>&1; then
         _self_row="$(node_registry_row 2>/dev/null)"
         if [ -n "$_self_row" ]; then
             _self_alias="$(blockdb_field "$_self_row" alias)"
             _self_user="$(blockdb_field "$_self_row" user)"
             _self_port="$(blockdb_field "$_self_row" port)"
+            _self_platform="$(blockdb_field "$_self_row" platform)"
             _self_alias_from_registry=1
         fi
     fi
@@ -254,6 +256,7 @@ _self_register() {
 
     _self_user="${_self_user:-$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')}"
     _self_port="${_self_port:-8022}"
+    _self_platform="${_self_platform:-android}"
 
     _self_prev_hk=""
     _self_blk_by_alias="$(blockdb_get "$DEVICES_DB" alias "$_self_alias")"
@@ -271,12 +274,12 @@ _self_register() {
         blockdb_remove "$DEVICES_DB" ip "$MY_IP"
     fi
 
-    _self_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nhostkey: %s\nnode_id: %s\n' \
-        "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "${_self_prev_hk:-}" "$(node_id)")"
+    _self_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nplatform: %s\nhostkey: %s\nnode_id: %s\n' \
+        "$_self_alias" "$MY_IP" "$_self_user" "$_self_port" "$_self_platform" "${_self_prev_hk:-}" "$(node_id)")"
     blockdb_upsert "$DEVICES_DB" alias "$_self_alias" "$_self_block"
-    log OK "self-registered $_self_alias ($MY_IP) in devices.db"
+    log OK "self-registered $_self_alias ($MY_IP) platform=$_self_platform in devices.db"
     if command -v node_alias_set >/dev/null 2>&1; then
-        node_alias_set "$_self_alias" "$_self_user" "$_self_port" || \
+        node_alias_set "$_self_alias" "$_self_user" "$_self_port" "$_self_platform" || \
             log WARN "node_alias_set failed -- registry.db not updated this run (see error above)"
     fi
     if command -v _node_config_save >/dev/null 2>&1; then
@@ -361,6 +364,60 @@ _purge_unrescued_stale_aliases() {
         _remove_offline_host "$_cand_ip"
     done
 }
+# ---------------------------------------------------------------------------
+# _seed_from_registry — pull every OTHER node's row from the cloud registry
+# (REGISTRY_DB) into local devices.db, so a node that has never been LAN-
+# discovered yet (e.g. just registered via --node-add on a different
+# machine) still shows up in `ndevs` on this node. Never touches this
+# node's own row (that is _self_register's job, called separately).
+# IP is left blank if devices.db has none yet -- the LAN scan phases that
+# follow in discover_hosts() fill it in when the peer is actually reachable.
+# Best-effort, idempotent: skipped entirely if REGISTRY_DB is absent.
+# ---------------------------------------------------------------------------
+_seed_from_registry() {
+    [ -f "$REGISTRY_DB" ] || return 0
+    [ -f "$DEVICES_DB" ] || : > "$DEVICES_DB"
+
+    _sfr_own_nid="$(node_id)"
+    _sfr_nids="$(session_tmp sfr_nids)"
+    awk '
+        BEGIN { RS=""; FS="\n" }
+        {
+            for (i = 1; i <= NF; i++) {
+                colon = index($i, ":")
+                if (colon == 0) continue
+                fk = substr($i, 1, colon - 1)
+                if (fk == "node_id") { print substr($i, colon + 2); break }
+            }
+        }
+    ' "$REGISTRY_DB" > "$_sfr_nids" 2>/dev/null
+
+    while IFS= read -r _sfr_nid; do
+        [ -n "$_sfr_nid" ] || continue
+        [ "$_sfr_nid" = "$_sfr_own_nid" ] && continue
+
+        _sfr_reg_blk="$(blockdb_get "$REGISTRY_DB" node_id "$_sfr_nid")"
+        [ -n "$_sfr_reg_blk" ] || continue
+        _sfr_alias="$(blockdb_field "$_sfr_reg_blk" alias)"
+        [ -n "$_sfr_alias" ] || continue
+
+        _sfr_existing="$(blockdb_get "$DEVICES_DB" node_id "$_sfr_nid")"
+        [ -n "$_sfr_existing" ] && continue
+
+        _sfr_user="$(blockdb_field "$_sfr_reg_blk" user)"
+        _sfr_port="$(blockdb_field "$_sfr_reg_blk" port)"
+        _sfr_platform="$(blockdb_field "$_sfr_reg_blk" platform)"
+        _sfr_hk="$(blockdb_field "$_sfr_reg_blk" hostkey)"
+        [ -n "$_sfr_user" ] || _sfr_user="u"
+        [ -n "$_sfr_port" ] || _sfr_port=8022
+        [ -n "$_sfr_platform" ] || _sfr_platform="android"
+
+        _sfr_block="$(printf 'alias: %s\nip: %s\nuser: %s\nport: %s\nplatform: %s\nhostkey: %s\nnode_id: %s\n' \
+            "$_sfr_alias" "" "$_sfr_user" "$_sfr_port" "$_sfr_platform" "${_sfr_hk:-}" "$_sfr_nid")"
+        blockdb_upsert "$DEVICES_DB" alias "$_sfr_alias" "$_sfr_block"
+        log OK "seeded '$_sfr_alias' from cloud registry (node $_sfr_nid, ip pending discovery)"
+    done < "$_sfr_nids"
+}
 
 # ---------------------------------------------------------------------------
 # discover_hosts — main entry point. Sets HOST_LIST.
@@ -374,6 +431,7 @@ discover_hosts() {
     _validated_tmp="$(session_tmp validated_hosts)"
 
     _SKIP_IPS=""
+    _seed_from_registry
     _validate_registered_hosts "$_validated_tmp"
 
     if has_cmd nmap; then
