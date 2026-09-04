@@ -431,6 +431,7 @@ discover_hosts() {
     _validated_tmp="$(session_tmp validated_hosts)"
 
     _SKIP_IPS=""
+    _self_register
     _seed_from_registry
     _validate_registered_hosts "$_validated_tmp"
 
