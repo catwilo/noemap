@@ -125,7 +125,7 @@ echo "Listo. Reconecta SSH para crear el socket en el servidor."
 CLIENTEOF
 }
 if [ "${1:-}" = client-setup ]; then _do_client_setup; exit 0; fi
-_source_mods util.sh blockdb.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh
+_source_mods util.sh blockdb.sh lock.sh identity.sh iface.sh cache.sh scan.sh fingerprint.sh output.sh ssh_bootstrap.sh
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,9 @@ render_output
 prompt_new_hosts
 render_connect
 render_active_hosts
-render_registered_devices
+
+# Distribute SSH keys to newly-discovered hosts (noemap#289)
+ssh_key_bootstrap "$DEVICES_DB"
 sync_devices_to_nodes
 
 log OK "noemap completed"
