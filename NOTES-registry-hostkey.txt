@@ -1,100 +1,177 @@
-NOEMAP -- registry hostkey cross-reference (sesion 2026-08-30/31)
+NOEMAP -- registry/hostkey/identity cross-reference (living doc)
 ===================================================================
-Herramienta dada por funcional. Sin tareas pendientes en miko (noemap#473
-cerrada). Este archivo es referencia tecnica si algo falla en el futuro.
+Herramienta dada por funcional. Este archivo es la referencia tecnica
+primaria: leer ESTO antes de re-investigar cualquier sintoma de
+identity/registry/hostkey/devices.db. Actualizar en cada sesion que
+toque este subsistema, no crear archivos nuevos paralelos.
 
-QUE SE HIZO
------------
-registry.db (~/.noemap-registry/registry.db, cloud, git-backed) gano un
-campo hostkey junto a node_id/alias/user/port. Permite que un host nuevo
-en un nodo, pero ya registrado en la nube por OTRO nodo, se auto-registre
-sin preguntar alias/user y sin SSH con credenciales a un host no
-registrado.
+QUE SE HIZO (arquitectura base, sesion 2026-08-30/31)
+-------------------------------------------------------
+registry.db (~/.noemap-registry/registry.db, cloud, git-backed) tiene
+campo hostkey junto a node_id/alias/user/port/platform. Permite que un
+host nuevo en un nodo, pero ya registrado en la nube por OTRO nodo, se
+auto-registre sin preguntar alias/user y sin SSH con credenciales a un
+host no registrado.
 
 ARQUITECTURA (donde vive cada pieza)
 -------------------------------------
-lib/util.sh            _get_host_key_fingerprint IP PORT
-                        ssh-keyscan + ssh-keygen, sin auth. Compartida por
-                        TODOS los binarios (antes vivia en fingerprint.sh,
-                        que ndevs no cargaba -- por eso se movio).
+lib/util.sh             _get_host_key_fingerprint IP PORT
+                         ssh-keyscan + ssh-keygen, sin auth. Compartida
+                         por TODOS los binarios.
 
-lib/identity.sh         _registry_write NODE_ID ALIAS USER PORT
-                        (linea ~211) -- UNICA funcion que escribe
-                        registry.db. Reemplaza logica que antes estaba
-                        duplicada 4 veces (node_alias_set + 3 funciones
-                        en bin/ndevs).
-                        - Guard de colision de alias.
-                        - Si NODE_ID == node_id() de esta maquina: escanea
-                          su propio hostkey via 127.0.0.1:PORT.
-                        - Si NODE_ID es de OTRO nodo: preserva el hostkey
-                          que ya tenia esa fila (nunca se puede escanear
-                          un hostkey ajeno sin SSH auth).
-                        - Guard de no-op: si la fila no cambio, salta
-                          commit/push pero SIEMPRE llega a
-                          _distribute_registry al final (fix critico,
-                          ver BUGS ENCONTRADOS).
+lib/identity.sh          _registry_write NODE_ID ALIAS USER PORT PLATFORM
+                         (linea ~211) -- UNICA funcion que escribe
+                         registry.db.
+                         - Guard de colision de alias.
+                         - Si NODE_ID == node_id() de esta maquina: escanea
+                           su propio hostkey via 127.0.0.1:PORT.
+                         - Si NODE_ID es de OTRO nodo: preserva el hostkey
+                           que ya tenia esa fila (nunca se puede escanear
+                           un hostkey ajeno sin SSH auth) -- esto significa
+                           que ndevs --registry-set sobre un nodo remoto
+                           NO refresca su hostkey; solo nhkrefresh (via
+                           _get_host_key_fingerprint contra la IP real)
+                           puede hacerlo.
+                         - Guard de no-op: si la fila no cambio, salta
+                           commit/push pero SIEMPRE llega a
+                           _distribute_registry al final.
 
-                        node_alias_set ALIAS USER PORT -- wrapper delgado,
-                        llama _registry_write con node_id() propio.
+                         node_alias_set ALIAS USER PORT PLATFORM -- wrapper
+                         delgado sobre _registry_write con node_id() propio.
 
-                        registry_row_by_hostkey HOSTKEY -- gemela de
-                        registry_row_by_alias, busca por el campo nuevo.
+                         registry_row_by_hostkey HOSTKEY / registry_row_by_alias
+                         ALIAS -- lookups de solo lectura contra la nube.
 
-                        _distribute_registry (linea ~333) -- tras cada
-                        _registry_write, hace pull+verify MATCH en cada
-                        nodo remoto via nssh. NUEVO (punto 5): si la fila
-                        de ese nodo remoto en el registro YA actualizado
-                        no tiene hostkey, dispara via nssh un
-                        'ndevs --node-set <alias> <user> <port>' remoto,
-                        AUTOMATICO, sin tocar el otro dispositivo a mano.
-                        user/port se toman de devices.db local (ya
-                        conocidos, no se inventan).
+                         _distribute_registry (linea ~340) -- tras cada
+                         _registry_write: pull+verify MATCH en cada nodo
+                         remoto via nssh. Si la fila de ese nodo remoto ya
+                         actualizada no tiene hostkey, dispara via nssh un
+                         'ndevs --node-set <alias> <user> <port>' remoto,
+                         AUTOMATICO. user/port se toman de devices.db local.
 
-lib/output.sh           prompt_new_hosts (linea ~151) -- al inicio del
-                        loop de host nuevo, ANTES de preguntar nada,
-                        calcula el hostkey del host recien descubierto y
-                        lo cruza con registry_row_by_hostkey. Si hay match
-                        y el alias no colisiona local: registra directo,
-                        sin preguntas, continue. Si no hay match: flujo
-                        interactivo de siempre, reusando el mismo hostkey
-                        ya calculado (no se recalcula mas abajo).
+lib/devices.sh           resolve_device(alias, db) -- IP viene SOLO de
+                         devices.db local (nunca de la nube). Si ip esta
+                         vacio: exit 1 duro, "empty IP for '<alias>'".
+                         Este exit silencia corriente abajo cualquier
+                         intento de handshake (ver bin/nhkrefresh abajo).
+                         port/user si tienen fallback a registry.db.
+                         Guard is_local_ip() bloquea handshake contra el
+                         propio nodo (exit 1), confirmado funcionando.
 
-bin/ndevs               _cmd_node_set / _cmd_node_add / _cmd_registry_set
-                        reducidas a wrappers de 3-5 lineas sobre
-                        node_alias_set / _registry_write. Sin logica de
-                        negocio propia. _registry_commit_and_push y
-                        _registry_default_dir (duplicados del flujo git)
-                        ELIMINADOS -- identity.sh es la unica fuente.
+lib/fingerprint.sh       _update_registered_hosts / new_hosts_list --
+                         ambas hacen lookup ip-first + hostkey-fallback
+                         (via _get_host_key_fingerprint) para reconciliar
+                         un host visto en la red contra devices.db. El
+                         fallback SOLO dispara si hay match exacto de
+                         hostkey contra una fila existente -- si el
+                         hostkey almacenado esta stale (dispositivo
+                         reformateado), el fallback tambien falla y el
+                         alias queda con ip vacio indefinidamente (root
+                         cause de noemap#499, ver mas abajo).
 
-BUGS REALES ENCONTRADOS Y CORREGIDOS EN ESTA SESION
------------------------------------------------------
-1. output.sh linea duplicada: un mkit replace mal calculado dejo una
-   linea de argumentos de printf repetida, rompiendo prompt_new_hosts con
-   'command not found' al toparse con un host real. Sintoma: crash
-   inmediato al correr noemap con un host nuevo en la red.
+lib/output.sh            prompt_new_hosts -- ante host nuevo, calcula su
+                         hostkey y cruza contra registry_row_by_hostkey
+                         ANTES de preguntar. Si hay match sin colision de
+                         alias local: auto-registra, sin preguntas.
 
-2. Guard de no-op en _registry_write cortaba con 'return 0' ANTES de
-   llegar a _distribute_registry. Consecuencia: el trigger del punto (5)
-   nunca se ejecutaba si la fila local no habia cambiado (caso comun).
-   Fix: el guard ahora solo salta el bloque commit/push (via if/else),
-   _distribute_registry corre siempre al final de la funcion.
+bin/ndevs                --registry-set NODE_ID ALIAS [USER] [PORT] [PLATFORM]
+                         edita a mano cualquier fila remota -- NO refresca
+                         hostkey de un nodo remoto (ver limitacion arriba).
+                         --update-ip ALIAS NEWIP -- unico camino para
+                         poblar el campo ip de devices.db; limpia
+                         known_hosts de la IP vieja y propaga devices.db
+                         via nscp al terminar.
+                         -h/--help TEXT DESACTUALIZADO: usage de
+                         --node-set/--node-add/--registry-set no muestra
+                         [platform] pese a que las 3 funciones ya lo usan
+                         (noemap#501, P5, no bloqueante).
 
-3. Causa raiz de que la primera prueba real fallara sin error visible:
-   tx2 nunca habia recibido NINGUN commit de la sesion (0 deploys hasta
-   ese punto) -- seguia en un commit de dias atras, sin las funciones
-   nuevas (_get_host_key_fingerprint no existia en su copia de util.sh).
-   Sintoma enganoso: el comando remoto via nssh SI reportaba [OK], pero
-   el hostkey nunca se guardaba porque corria codigo viejo. Diagnostico:
-   comparar 'git -C ~/unix-toolkit-tools/noemap log --oneline -1' en
-   ambos nodos ante cualquier comportamiento inconsistente entre ellos.
+bin/nhkrefresh           NUEVO (noemap#499, shippeado 2026-09-04, commit
+                         43618df). Escanea TODOS los alias de devices.db,
+                         compara hostkey live (via _get_host_key_fingerprint
+                         contra la IP local ya almacenada) contra el
+                         hostkey guardado en registry.db (via
+                         registry_row_by_alias), y en caso de mismatch
+                         pregunta [y/N] antes de aplicar
+                         'ndevs --registry-set' con el node_id/user/port/
+                         platform ya conocidos de la fila remota.
+                         LIMITACION CONFIRMADA (no un bug, precondicion de
+                         diseno): si devices.db tiene ip vacio para ese
+                         alias, nhkrefresh hace SKIP inmediato (linea 82-85,
+                         "no IP in devices.db -- cannot reach to check
+                         hostkey") -- no intenta resolver la IP por otra
+                         via. Requiere 'ndevs --update-ip <alias> <ip>'
+                         corrido a mano ANTES, con la IP obtenida de otra
+                         fuente (ej. fingerprint_hosts / noemap discovery).
+                         Uso: nhkrefresh (sin argumentos), o nhkrefresh -h.
+
+CASOS RESUELTOS -- SESION 2026-09-04
+----------------------------------------
+noemap#498 (P1): este nodo (tx1, node_id c62a5cd48d8c2ce0) no tenia fila
+en registry.db -- _self_register() colgaba en un prompt de /dev/tty
+durante discover_hosts, sin ningun mensaje de error visible (proceso
+simplemente no avanzaba). Fix: escribir la fila de tx1 en registry.db
+con el node_id correcto. Confirmado con node_alias() resolviendo "tx1"
+tras el fix. Puntos de diseno 1a/1b/4 de una investigacion previa
+(registry-bootstrap-investigation-2026-09-03.md) fueron verificados YA
+implementados en el codigo actual -- ese archivo de investigacion queda
+obsoleto, no seguir usandolo como referencia activa.
+
+noemap#499 (P3): ver arquitectura de bin/nhkrefresh arriba. Caso real
+cerrado hoy mismo con la herramienta nueva:
+  1. devices.db tenia ip vacio para tx2 (root cause: hostkey guardado
+     en registry.db estaba stale por reformateo previo del dispositivo,
+     rompiendo el fallback hostkey de fingerprint.sh descrito arriba).
+  2. Se resolvio manualmente la IP real (192.168.1.4, ya confirmada por
+     fingerprint_hosts en corridas previas) con:
+       ndevs --update-ip tx2 192.168.1.4
+  3. Se corrio nhkrefresh -- detecto el mismatch, confirmo [y], actualizo
+     registry.db, distribucion a tx2 con MATCH de commit hash.
+  4. noemap corrido de nuevo: CERO warnings, "host 192.168.1.4 already
+     registered as tx2", "handshake tx2: OK", "synced devices.db -> tx2".
+  Nota curiosa sin investigar: el hostkey "live" capturado por nhkrefresh
+  en el paso 3 (SHA256:qCkZkYA5...) DIFIRIO del capturado horas antes por
+  fingerprint_hosts en la misma sesion (SHA256:vHsIRIWX...), mismo host,
+  misma IP, mismo puerto. Causa no confirmada (posible: reinicio real de
+  sshd en tx2 entre ambas capturas, o inestabilidad de red). Si vuelve a
+  ocurrir, comparar timestamps de ambas capturas contra logs de sshd en
+  tx2 antes de asumir bug de codigo.
+
+noemap#501 (P5, pendiente, no bloqueante): ver bin/ndevs arriba.
 
 QUE PUEDE FALLAR EN EL FUTURO (chequear aqui primero)
 --------------------------------------------------------
+- Alias con ip vacio en devices.db, indefinidamente: causa mas probable
+  es hostkey stale en registry.db rompiendo el fallback de
+  fingerprint.sh. Diagnostico en un solo bloque:
+    cat ~/.local/share/noemap/state/devices.db   # confirmar ip vacio
+    cat ~/.noemap-registry/registry.db           # ver hostkey guardado
+  Fix: 1) ndevs --update-ip <alias> <ip-real-conocida>, 2) nhkrefresh
+  para reconciliar el hostkey. NO editar los .db a mano (regla del
+  usuario, ver noemap#442 nota [1]) -- siempre via ndevs/nhkrefresh.
+
+- _self_register() corre 2 VECES por corrida de noemap (discover_hosts
+  Y sync_devices_to_nodes, scan.sh lineas ~305 y ~434) sin guard de
+  idempotencia a nivel de sesion -- confirmado hoy (noemap#500, P2,
+  AUN NO RESUELTO): cada llamada dispara un ciclo commit+push+merge
+  completo en _registry_write, incluso cuando el guard de no-op salta
+  el commit real (el checkout de branch + push + merge ocurre igual).
+  Sintoma observado: 2 commits en el mismo run de noemap
+  (chore/registry-<node_id> aparece 2 veces en el log de una sola
+  ejecucion). No rompe nada hoy pero es ruido de branches/commits
+  innecesario. Fix propuesto (no implementado): flag de sesion tipo
+  _SELF_REGISTER_DONE (mismo patron que SESSION_TMP_DIR en util.sh).
+
+- ndevs --registry-set / --node-add sobre un nodo REMOTO nunca actualiza
+  su hostkey (por diseno, ver nota en identity.sh arriba) -- solo
+  nhkrefresh puede hacerlo, porque es el unico camino que llama
+  _get_host_key_fingerprint contra la IP real del nodo remoto en vez de
+  preservar el valor previo.
+
 - sshd caido en un nodo: _get_host_key_fingerprint falla silencioso
-  (2>/dev/null), el hostkey queda vacio o preserva el valor previo. No
-  es un bug de noemap -- verificar con: pgrep -fl sshd ; cat
-  $PREFIX/var/run/sshd.pid ; kill -0 <pid>. Reiniciar con: sshd
-  (comando plano, sin flags, en Termux).
+  (2>/dev/null), el hostkey queda vacio o preserva el valor previo.
+  Verificar con: pgrep -fl sshd ; cat $PREFIX/var/run/sshd.pid ;
+  kill -0 <pid>. Reiniciar con: sshd (comando plano, sin flags, Termux).
 
 - Un nodo con codigo desactualizado (sin git pull/deploy reciente): los
   triggers automaticos fallan silenciosamente porque las funciones
@@ -102,36 +179,40 @@ QUE PUEDE FALLAR EN EL FUTURO (chequear aqui primero)
   cada nodo, comparar contra origin/main. Fix: ut deploy noemap.
 
 - Si algun binario nuevo llega a escribir directo a registry.db con
-  printf en vez de llamar _registry_write, quedara con 4 campos en vez
-  de 5 (sin hostkey) -- rompe la deteccion de (3) y (5) para esa fila.
+  printf en vez de llamar _registry_write, quedara con campos faltantes
+  (sin hostkey/platform) -- rompe deteccion de mismatch y auto-trigger.
   Buscar con: grep -rn "node_id: %s.\\\\nalias" en todo el repo noemap,
   debe aparecer SOLO dentro de _registry_write en identity.sh.
 
 - Un host nuevo cuyo alias de la nube YA existe localmente bajo otra IP
-  no se auto-registra (linea ~185 output.sh, guard explicito) -- cae al
-  flujo interactivo de "IP updated" existente, correcto por diseno, no
-  es un bug.
+  no se auto-registra (guard explicito en output.sh) -- cae al flujo
+  interactivo de "IP updated" existente, correcto por diseno.
 
 - Equipo genuinamente nuevo en TODA la red (ninguna fila en ningun nodo
-  aun): sigue preguntando alias/user, correcto por diseno, es el unico
-  caso legitimo que requiere input humano.
+  aun): sigue preguntando alias/user, correcto por diseno, unico caso
+  legitimo que requiere input humano.
 
 PUNTOS DEL DISENO ORIGINAL FUERA DE ALCANCE (no tocados)
 -----------------------------------------------------------
-(4) modelo de datos IP-nunca-en-registry -- ya funcionaba antes de esta
-    sesion, no se toco.
+(4) modelo de datos IP-nunca-en-registry -- ya funcionaba, no se toco.
 (6) distribucion en malla con 3+ nodos -- no implementado, solo 2 nodos
     probados (tx1, tx2).
 (7) reporte explicito de motivo de fallo por nodo inalcanzable -- no
     implementado.
 (8) purga inmediata de registro viejo si cambia de red/subred -- no
-    implementado.
+    implementado (ver noemap#292/#463, resueltas para deteccion de
+    cambio de subred PROPIA via ifconfig, pero purga inmediata de todo
+    el registro anterior en ese caso sigue sin confirmar shippeada).
 
-COMMITS DE ESTA SESION (main, en orden)
-------------------------------------------
-7873966  fix(devices): always prefer registry.db port over local
-89892d6  feat(noemap): cross-ref new hosts via registry hostkey
-165c58b  fix(registry): consolidate write path into _registry_write
-2647f78  fix(output): remove duplicated printf arg line
-b3a48f2  feat(registry): auto-trigger remote hostkey registration
-e1f6b77  fix(registry): always distribute even on no-op local write
+COMMITS RELEVANTES (main, orden cronologico)
+------------------------------------------------
+Sesion 2026-08-30/31 (arquitectura base hostkey en registry.db):
+  7873966  fix(devices): always prefer registry.db port over local
+  89892d6  feat(noemap): cross-ref new hosts via registry hostkey
+  165c58b  fix(registry): consolidate write path into _registry_write
+  2647f78  fix(output): remove duplicated printf arg line
+  b3a48f2  feat(registry): auto-trigger remote hostkey registration
+  e1f6b77  fix(registry): always distribute even on no-op local write
+
+Sesion 2026-09-04 (identity fix + nhkrefresh):
+  43618df  feat(noemap): add nhkrefresh hostkey reconciliation script
