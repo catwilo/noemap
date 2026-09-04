@@ -281,6 +281,12 @@ _self_register() {
 # distributed db always includes this node.
 # ---------------------------------------------------------------------------
 sync_devices_to_nodes() {
+    # Internal/automated call -- never prompt for a password mid-scan;
+    # fail fast instead (ssh_config's automation Match block enforces
+    # BatchMode yes once nssh receives this, per bin/nssh's fix in a745bf1
+    # to preserve a caller-set role instead of overwriting it).
+    export NOEMAP_SSH_ROLE=automation
+
     _self_register
 
     [ -f "$DEVICES_DB" ] && [ -s "$DEVICES_DB" ] || return 0
