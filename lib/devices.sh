@@ -40,6 +40,11 @@ resolve_device() {
 
     [ -n "$_ip" ] || { log ERROR "devices.db: empty IP for '$_alias'"; exit 1; }
 
+    if command -v is_local_ip >/dev/null 2>&1 && is_local_ip "$_ip"; then
+        log ERROR "refusing self-targeted handshake: '$_alias' resolves to this node's own IP ($_ip)"
+        exit 1
+    fi
+
     if command -v registry_row_by_alias >/dev/null 2>&1; then
         _cloud_blk="$(registry_row_by_alias "$_alias")"
         if [ -n "$_cloud_blk" ]; then
@@ -136,6 +141,11 @@ resolve_scp_target() {
 
             _ip="$(blockdb_field "$_blk" ip)"
             _user="$(blockdb_field "$_blk" user)"
+
+            if command -v is_local_ip >/dev/null 2>&1 && [ -n "$_ip" ] && is_local_ip "$_ip"; then
+                log ERROR "refusing self-targeted transfer: '$_alias' resolves to this node's own IP ($_ip)"
+                exit 1
+            fi
 
             [ -n "$_ip" ] || {
                 log ERROR "devices.db: missing IP for alias '$_alias'"

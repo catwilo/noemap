@@ -161,6 +161,10 @@ prompt_new_hosts() {
     while IFS='|' read -r _ip _type _ttl _ssh_port _all_ports; do
         [ -n "$_ip" ] || continue
         _found_blk="$(blockdb_get "$_devdb" ip "$_ip")"
+        if [ -z "$_found_blk" ]; then
+            _seed_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
+            [ -n "$_seed_hk" ] && _found_blk="$(blockdb_get "$_devdb" hostkey "$_seed_hk")"
+        fi
         [ -z "$_found_blk" ] && printf '%s|%s|%s\n' \
             "$_ip" "$_type" "${_ssh_port:-22}" >> "$_new_tmp"
     done < "$_hosts_db"

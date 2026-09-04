@@ -259,6 +259,10 @@ _update_registered_hosts() {
         [ -n "$_ip" ] || continue
 
         _existing_blk="$(blockdb_get "$DEVICES_DB" ip "$_ip")"
+        if [ -z "$_existing_blk" ]; then
+            _pre_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
+            [ -n "$_pre_hk" ] && _existing_blk="$(blockdb_get "$DEVICES_DB" hostkey "$_pre_hk")"
+        fi
         _existing="$([ -n "$_existing_blk" ] && blockdb_field "$_existing_blk" alias || printf '')"
 
         if [ -z "$_existing" ]; then
@@ -347,6 +351,10 @@ new_hosts_list() {
     while IFS='|' read -r _ip _type _ttl _ssh_port _all_ports; do
         [ -n "$_ip" ] || continue
         _found_blk="$(blockdb_get "$DEVICES_DB" ip "$_ip")"
+        if [ -z "$_found_blk" ]; then
+            _nhl_hk="$(_get_host_key_fingerprint "$_ip" "${_ssh_port:-22}" 2>/dev/null)"
+            [ -n "$_nhl_hk" ] && _found_blk="$(blockdb_get "$DEVICES_DB" hostkey "$_nhl_hk")"
+        fi
         [ -z "$_found_blk" ] && printf '%s|%s|%s\n' "$_ip" "$_type" "${_ssh_port:-22}"
     done < "$_hdb"
 }
