@@ -138,6 +138,24 @@ log INFO "libs  -> $LIBDIR"
 mkdir -p "$BINDIR" "$LIBDIR" "$STATEDIR" "$CFGDIR" "$DATADIR/logs"
 chmod 700 "$DATADIR"
 
+
+# ---------------------------------------------------------------------------
+# Registry bootstrap (noemap identity/hostkey trust -- load-bearing, hard-fail)
+#   Clones the git-backed master registry so this node can read cloud-
+#   registered node identities/hostkeys. Without it, node_alias()/
+#   registry_row_by_hostkey() silently degrade to empty (identity.sh),
+#   causing spurious alias prompts and password fallback instead of
+#   hostkey-based trust. Idempotent: skipped if already cloned.
+# ---------------------------------------------------------------------------
+REGISTRY_DIR="$HOME/.noemap-registry"
+if [ ! -d "$REGISTRY_DIR/.git" ]; then
+    log INFO "cloning noemap registry..."
+    git clone git@github.com:catwilo/noemap-registry.git "$REGISTRY_DIR" \
+        || fail "registry clone failed -- noemap requires it for identity/hostkey trust. Run manually: git clone git@github.com:catwilo/noemap-registry.git $REGISTRY_DIR"
+    log OK "registry cloned: $REGISTRY_DIR"
+else
+    log INFO "registry already cloned: $REGISTRY_DIR"
+fi
 # ---------------------------------------------------------------------------
 # Symlink libs to the shared dir (source of truth stays the repo)
 # ---------------------------------------------------------------------------
