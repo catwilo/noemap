@@ -441,9 +441,9 @@ case "${1:-}" in
         printf '       ndevs --add <alias> <ip> <user> [port]\n'
         printf '       ndevs --rollback <alias>\n'
         printf '       ndevs --push-vpn <alias>\n'
-        printf '       ndevs --node-set <alias> [user] [port]\n'
-        printf '       ndevs --node-add <node-id> <alias> <user> <port>\n'
-        printf '       ndevs --registry-set <node-id> <alias> [user] [port]\n'
+        printf '       ndevs --node-set <alias> [user] [port] [platform]\n'
+        printf '       ndevs --node-add <node-id> <alias> <user> <port> [platform]\n'
+        printf '       ndevs --registry-set <node-id> <alias> [user] [port] [platform]\n'
         printf '       ndevs --resetall\n'
         ;;
     *)
