@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# nhkrefresh -- detect and reconcile stale SSH hostkeys against registry.db
+#
+# Problem (noemap#499): when a device is reformatted/reinstalled, its SSH
+# hostkey changes. registry.db keeps the OLD hostkey, which silently breaks
+# hostkey-fallback lookups in fingerprint.sh (_update_registered_hosts,
+# new_hosts_list), leaving devices.db's ip field empty for that alias
+# indefinitely -- with no error, just silent staleness.
+#
+# Usage:
+#   nhkrefresh          scan all devices.db aliases, report + prompt per mismatch
+#   nhkrefresh -h|--help
+#
+# Reuses (does not duplicate):
+#   _get_host_key_fingerprint (util.sh)  -- live hostkey fetch, no auth needed
+#   registry_row_by_alias     (identity.sh) -- stored hostkey lookup
+#   _registry_write            (identity.sh) -- single writer for registry.db,
+#                                                via `ndevs --registry-set`
+#
+# Exit codes:
+#   0  completed (mismatches may have been found/handled)
+#   1  error (missing db, arg error)
+
+set -eu
+
+_self="$0"
+case "$_self" in */*) ;; *) _self="$(command -v "$_self")" ;; esac
+if _real="$(readlink -f "$_self" 2>/dev/null)" && [ -n "$_real" ]; then
+    _self="$_real"
+else
+    while [ -L "$_self" ]; do
+        _link="$(readlink "$_self")"
+        case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+    done
+fi
+_bindir="$(cd "$(dirname "$_self")" && pwd -P)"
+. "$_bindir/_bootstrap"
+_source_mods util.sh blockdb.sh identity.sh
+
+case "${1:-}" in
+    -h|--help)
+        printf 'usage: nhkrefresh\n'
+        printf '  Scan devices.db aliases, compare live SSH hostkey against registry.db.\n'
+        printf '  Prompts [y/N] before updating any mismatch via ndevs --registry-set.\n'
+        exit 0
+        ;;
+esac
+
+[ -f "$DB" ] || { printf '[ERROR] devices database missing: %s\n' "$DB" >&2; exit 1; }
+[ -s "$DB" ] || { printf '[INFO] no devices registered\n' >&2; exit 0; }
+
+_me="$(node_alias 2>/dev/null || printf '')"
+
+_aliases="$(awk '
+    BEGIN { RS=""; FS="\n" }
+    {
+        for (i = 1; i <= NF; i++) {
+            colon = index($i, ":")
+            if (colon == 0) continue
+            fk = substr($i, 1, colon - 1)
+            if (fk == "alias") { print substr($i, colon + 2); break }
+        }
+    }
+' "$DB" 2>/dev/null)"
+
+[ -n "$_aliases" ] || { printf '[INFO] no aliases found in devices.db\n' >&2; exit 0; }
+
+_checked=0
+_mismatches=0
+_updated=0
+
+printf '%s\n' "$_aliases" | while IFS= read -r _a; do
+    [ -n "$_a" ] || continue
+    [ "$_a" = "$_me" ] && continue   # skip self -- own hostkey is scanned via 127.0.0.1 elsewhere, not relevant here
+
+    _blk="$(blockdb_get "$DB" alias "$_a")"
+    [ -n "$_blk" ] || continue
+    _ip="$(blockdb_field "$_blk" ip)"
+    _port="$(blockdb_field "$_blk" port)"
+    [ -n "$_port" ] || _port=8022
+
+    if [ -z "$_ip" ]; then
+        printf '[SKIP] %-12s no IP in devices.db -- cannot reach to check hostkey\n' "$_a"
+        continue
+    fi
+
+    _checked=$(( _checked + 1 ))
+
+    _live_hk="$(_get_host_key_fingerprint "$_ip" "$_port" 2>/dev/null)"
+    if [ -z "$_live_hk" ]; then
+        printf '[SKIP] %-12s unreachable at %s:%s -- cannot fetch live hostkey\n' "$_a" "$_ip" "$_port"
+        continue
+    fi
+
+    _reg_blk=""
+    if command -v registry_row_by_alias >/dev/null 2>&1; then
+        _reg_blk="$(registry_row_by_alias "$_a" 2>/dev/null)"
+    fi
+
+    if [ -z "$_reg_blk" ]; then
+        printf '[SKIP] %-12s no registry.db row for this alias -- nothing to compare\n' "$_a"
+        continue
+    fi
+
+    _stored_hk="$(blockdb_field "$_reg_blk" hostkey)"
+    _reg_nid="$(blockdb_field "$_reg_blk" node_id)"
+    _reg_user="$(blockdb_field "$_reg_blk" user)"
+    _reg_port="$(blockdb_field "$_reg_blk" port)"
+    _reg_platform="$(blockdb_field "$_reg_blk" platform)"
+
+    if [ "$_stored_hk" = "$_live_hk" ]; then
+        printf '[OK]   %-12s hostkey matches registry.db\n' "$_a"
+        continue
+    fi
+
+    _mismatches=$(( _mismatches + 1 ))
+    printf '\n[MISMATCH] %s (%s:%s)\n' "$_a" "$_ip" "$_port"
+    printf '  registry.db: %s\n' "${_stored_hk:-<empty>}"
+    printf '  live:        %s\n' "$_live_hk"
+    printf '  Update registry.db to the live hostkey? [y/N] '
+    read -r _confirm </dev/tty || _confirm=""
+    case "$_confirm" in
+        [yY]|[yY][eE][sS])
+            if [ -n "$_reg_nid" ] && has_cmd ndevs; then
+                if ndevs --registry-set "$_reg_nid" "$_a" "${_reg_user:-u}" "${_reg_port:-$_port}" "${_reg_platform:-android}" 2>&1 | sed 's/^/  /'; then
+                    _updated=$(( _updated + 1 ))
+                    printf '  [OK] updated\n'
+                else
+                    printf '  [WARN] ndevs --registry-set failed -- see output above\n'
+                fi
+            else
+                printf '  [WARN] missing node_id for "%s" in registry.db -- cannot update safely, skipping\n' "$_a"
+            fi
+            ;;
+        *)
+            printf '  [SKIP] left as-is\n'
+            ;;
+    esac
+done
+
+printf '\n[DONE] hostkey refresh complete\n'
