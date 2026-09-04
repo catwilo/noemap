@@ -198,6 +198,12 @@ _self_register() {
     [ -n "${MY_IP:-}" ] || return 0
     [ -f "$DEVICES_DB" ] || : > "$DEVICES_DB"
 
+    # Session-level idempotency guard (noemap#500): _self_register is called
+    # twice per run (discover_hosts + sync_devices_to_nodes). Without this,
+    # each call reaches _registry_write unconditionally, causing two full
+    # git checkout+push+merge cycles in a single noemap run.
+    [ -z "${_SELF_REGISTER_DONE:-}" ] || return 0
+
     _registry_pull_latest
 
     _self_alias=""
@@ -248,6 +254,7 @@ _self_register() {
             else
                 log WARN "this node has no canonical identity -- run: ndevs --node-set <alias>"
             fi
+            _SELF_REGISTER_DONE=1
             return 0
         fi
         _self_user=""
@@ -286,6 +293,7 @@ _self_register() {
         _node_config_save "$_self_alias" "$_self_user" "$_self_port" || \
             log WARN "_node_config_save failed -- local offline cache not updated this run"
     fi
+    _SELF_REGISTER_DONE=1
 }
 
 # ---------------------------------------------------------------------------
