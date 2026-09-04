@@ -68,8 +68,12 @@ _user="$(_ensure_user "$_name" "$DB" "$_user")"
     exit 1
 }
 
-# Signal to ssh_config which Match block to activate
-export NOEMAP_SSH_ROLE=interactive
+# Signal to ssh_config which Match block to activate. Only default to
+# "interactive" when the caller hasn't already set a role (e.g.
+# ssh_key_bootstrap/ndevs export "automation" before invoking nssh as an
+# internal subroutine -- that value must survive, not be overwritten).
+: "${NOEMAP_SSH_ROLE:=interactive}"
+export NOEMAP_SSH_ROLE
 
 
 # Start clipboard listener on-demand for interactive sessions; stop on exit
