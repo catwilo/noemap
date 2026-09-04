@@ -266,3 +266,87 @@ prompt_new_hosts() {
     done < "$_new_tmp"
     rm -f "$_new_tmp"
 }
+
+# ---------------------------------------------------------------------------
+# _prompt_self_identity — interactive registration of THIS node's own
+# canonical identity (alias/user/port) when no registry row and no local
+# node-config cache exist yet (genuinely new device). Mirrors the exact
+# style/validation of prompt_new_hosts above. Silent no-op if stdout is
+# not a TTY (caller falls back to the manual "ndevs --node-set" hint).
+# On success, calls node_alias_set (same single-writer path used by
+# `ndevs --node-set`) and prints the resulting alias so the caller can
+# continue self-registration in devices.db.
+# ---------------------------------------------------------------------------
+_prompt_self_identity() {
+    [ -t 1 ] || return 1
+    command -v node_alias_set >/dev/null 2>&1 || return 1
+
+    printf "${_C_BOLD}  -- NEW DEVICE -- this node has no canonical identity yet --${_C_RESET}\n\n"
+
+    case "$(uname 2>/dev/null)" in
+        Darwin) _psi_base="mac" ;;
+        *)      if [ -n "${PREFIX:-}" ]; then _psi_base="tx"; else _psi_base="db"; fi ;;
+    esac
+    _psi_n=0; _psi_default_alias="$_psi_base"
+    while command -v registry_row_by_alias >/dev/null 2>&1 && \
+          [ -n "$(registry_row_by_alias "$_psi_default_alias" 2>/dev/null)" ]; do
+        _psi_n=$(( _psi_n + 1 )); _psi_default_alias="${_psi_base}${_psi_n}"
+    done
+
+    _psi_alias=""
+    while [ -z "$_psi_alias" ]; do
+        printf "  Alias [%s]: " "$_psi_default_alias"
+        read -r _psi_input_alias </dev/tty || _psi_input_alias=""
+        _psi_input_alias="$(printf '%s' "$_psi_input_alias" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [ -z "$_psi_input_alias" ]; then
+            _psi_alias="$_psi_default_alias"
+        else
+            case "$_psi_input_alias" in
+                *[^a-zA-Z0-9_-]*)
+                    printf "  ${_C_YELLOW}[!]${_C_RESET} invalid chars -- only a-z 0-9 _ -\n"
+                    continue ;;
+            esac
+            [ "${#_psi_input_alias}" -gt 20 ] && {
+                printf "  ${_C_YELLOW}[!]${_C_RESET} too long (max 20)\n"; continue; }
+            _psi_alias="$_psi_input_alias"
+        fi
+    done
+
+    _psi_default_user="u"
+    _psi_user=""
+    while [ -z "$_psi_user" ]; do
+        printf "  User [%s]: " "$_psi_default_user"
+        read -r _psi_input_user </dev/tty || _psi_input_user=""
+        _psi_input_user="$(printf '%s' "$_psi_input_user" | \
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+        [ -z "$_psi_input_user" ] && _psi_user="$_psi_default_user" || _psi_user="$_psi_input_user"
+    done
+
+    _psi_default_port="8022"
+    _psi_port=""
+    while [ -z "$_psi_port" ]; do
+        printf "  Port [%s]: " "$_psi_default_port"
+        read -r _psi_input_port </dev/tty || _psi_input_port=""
+        _psi_input_port="$(printf '%s' "$_psi_input_port" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [ -z "$_psi_input_port" ]; then
+            _psi_port="$_psi_default_port"
+        else
+            case "$_psi_input_port" in
+                *[!0-9]*)
+                    printf "  ${_C_YELLOW}[!]${_C_RESET} port must be numeric\n"
+                    continue ;;
+            esac
+            _psi_port="$_psi_input_port"
+        fi
+    done
+
+    if node_alias_set "$_psi_alias" "$_psi_user" "$_psi_port"; then
+        printf "  ${_C_GREEN}[OK]${_C_RESET} node identity set: %s user=%s port=%s\n\n" \
+            "$_psi_alias" "$_psi_user" "$_psi_port"
+        printf '%s\n' "$_psi_alias"
+        return 0
+    else
+        printf "  ${_C_YELLOW}[!]${_C_RESET} node_alias_set failed -- see error above\n\n"
+        return 1
+    fi
+}

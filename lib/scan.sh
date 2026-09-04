@@ -236,8 +236,20 @@ _self_register() {
     fi
 
     if [ -z "$_self_alias" ]; then
-        log WARN "this node has no canonical identity -- run: ndevs --node-set <alias>"
-        return 0
+        _self_prompt_rc=1
+        if command -v _prompt_self_identity >/dev/null 2>&1; then
+            _self_alias="$(_prompt_self_identity)"; _self_prompt_rc=$?
+        fi
+        if [ -z "$_self_alias" ]; then
+            if [ "$_self_prompt_rc" -eq 1 ] && [ ! -t 1 ]; then
+                log WARN "this node has no canonical identity -- non-interactive context (no TTY), run: ndevs --node-set <alias>"
+            else
+                log WARN "this node has no canonical identity -- run: ndevs --node-set <alias>"
+            fi
+            return 0
+        fi
+        _self_user=""
+        _self_port=""
     fi
 
     _self_user="${_self_user:-$(id -un 2>/dev/null || whoami 2>/dev/null || printf 'u')}"
